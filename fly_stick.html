@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="eigennode-aspect" content="3/2">
+<title>Fun Fly Stick, Flyers and Paper</title>
+<link rel="stylesheet" href="shared/sim.css">
+</head>
+<body>
+
+<p id="hint">Drag the flyers, the bits of paper, the stick, the hand and the glove. Turn the stick on and see what happens.</p>
+
+<div id="cwrap"><div id="stage"><canvas id="canvas"></canvas></div></div>
+
+<div id="controls">
+  <div class="row">
+    <button id="power">Turn the stick on</button>
+    <button id="reset">Start over</button>
+  </div>
+  <div class="row"><span class="note">Touching something with your hand lets its charge run away into the ground. Rubber does not let charge through.</span></div>
+</div>
+
+<script src="shared/charges.js"></script>
+<script src="shared/flystick-scene.js"></script>
+<script>
+buildFlyStickScene({
+  canvas: document.getElementById('canvas'),
+  model: 'none',
+  powerBtn: document.getElementById('power'),
+  resetBtn: document.getElementById('reset')
+});
+</script>
+</body>
+</html>

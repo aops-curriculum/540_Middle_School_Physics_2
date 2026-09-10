@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="eigennode-aspect" content="3/2">
+<title>Rubbing Plastics Together</title>
+<link rel="stylesheet" href="shared/sim.css">
+</head>
+<body>
+
+<p id="hint">Click two of the plastics to choose them, rub them together, then drag them near each other and watch what they do.</p>
+
+<div id="cwrap"><div id="stage"><canvas id="canvas"></canvas></div></div>
+
+<div id="controls">
+  <div class="row">
+    <button id="rub" disabled>Rub two plastics together</button>
+    <button id="clear">Take all the charge away</button>
+    <button id="reset">Start over</button>
+  </div>
+  <div class="row"><span class="note" id="status">Click two of the plastics to choose them.</span></div>
+</div>
+
+<script src="shared/charges.js"></script>
+<script src="shared/plastics-scene.js"></script>
+<script>
+buildPlasticsScene({
+  canvas: document.getElementById('canvas'),
+  withStick: false,
+  rubBtn: document.getElementById('rub'),
+  clearBtn: document.getElementById('clear'),
+  resetBtn: document.getElementById('reset'),
+  status: document.getElementById('status')
+});
+</script>
+</body>
+</html>

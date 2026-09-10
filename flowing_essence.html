@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="eigennode-aspect" content="3/2">
+<title>The Charge Model</title>
+<link rel="stylesheet" href="shared/sim.css">
+</head>
+<body>
+
+<p id="hint">Same apparatus, with one idea drawn on top: turning the stick on makes <b>charge</b> (the red stuff), which can flow from one object to another.</p>
+
+<div id="cwrap"><div id="stage"><canvas id="canvas"></canvas></div></div>
+
+<div id="controls">
+  <div class="row">
+    <button id="power">Turn the stick on</button>
+    <button id="reset">Start over</button>
+  </div>
+  <div class="row"><span class="note">In this model, something with charge attracts something without it, and two things that both have charge repel.</span></div>
+</div>
+
+<script src="shared/charges.js"></script>
+<script src="shared/flystick-scene.js"></script>
+<script>
+buildFlyStickScene({
+  canvas: document.getElementById('canvas'),
+  model: 'one',
+  powerBtn: document.getElementById('power'),
+  resetBtn: document.getElementById('reset')
+});
+</script>
+</body>
+</html>

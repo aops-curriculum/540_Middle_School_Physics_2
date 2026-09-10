@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Windows reserved device name — created by Playwright/Chromium on Windows
+# when capturing screenshots from file:// pages; cannot be git-added on Windows
+nul
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo

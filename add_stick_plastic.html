@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="eigennode-aspect" content="3/2">
+<title>Rubbing Plastics, with a Fun Fly Stick</title>
+<link rel="stylesheet" href="shared/sim.css">
+</head>
+<body>
+
+<p id="hint">Same three plastics, plus a Fun Fly Stick. We decided earlier that the charge on the stick is negative, so now you have something to compare against.</p>
+
+<div id="cwrap"><div id="stage"><canvas id="canvas"></canvas></div></div>
+
+<div id="controls">
+  <div class="row">
+    <button id="rub" disabled>Rub two plastics together</button>
+    <button id="power">Turn the stick on</button>
+    <button id="clear">Take all the charge away</button>
+    <button id="reset">Start over</button>
+  </div>
+  <div class="row"><span class="note" id="status">Click two of the plastics to choose them.</span></div>
+</div>
+
+<script src="shared/charges.js"></script>
+<script src="shared/plastics-scene.js"></script>
+<script>
+buildPlasticsScene({
+  canvas: document.getElementById('canvas'),
+  withStick: true,
+  rubBtn: document.getElementById('rub'),
+  clearBtn: document.getElementById('clear'),
+  resetBtn: document.getElementById('reset'),
+  powerBtn: document.getElementById('power'),
+  status: document.getElementById('status')
+});
+</script>
+</body>
+</html>

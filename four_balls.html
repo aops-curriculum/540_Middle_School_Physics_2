@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="eigennode-aspect" content="3/2">
+<title>Four Foam Balls and a Glass Rod</title>
+<link rel="stylesheet" href="shared/sim.css">
+</head>
+<body>
+
+<p id="hint">Drag any two items onto the two hooks in the middle. They hang on threads, so you can see whether they pull together, push apart, or do nothing. The glass rod was rubbed with wool, so it is positive.</p>
+
+<div id="cwrap"><div id="stage"><canvas id="canvas"></canvas></div></div>
+
+<div id="controls">
+  <div class="row">
+    <span>Result: <span class="readout" id="result">put two things on the hooks</span></span>
+    <span class="sep">|</span>
+    <button id="clearslots">Take them down</button>
+    <button id="clearlog">Clear the record</button>
+  </div>
+  <div class="row"><span class="note" id="log">No measurements yet.</span></div>
+</div>
+
+<script src="shared/charges.js"></script>
+<script>
+(function () {
+  var CS = window.ChargeSim;
+  var W = 900, H = 600;
+  var canvas = document.getElementById('canvas');
+  var ctx;
+
+  // The answer the lesson works toward: A negative, B positive, C and D neutral.
+  var ITEMS = [
+    { id: 'A',   kind: 'ball', q: -2.2, color: '#f2f2f0' },
+    { id: 'B',   kind: 'ball', q:  2.2, color: '#f2f2f0' },
+    { id: 'C',   kind: 'ball', q:  0,   color: '#f2f2f0' },
+    { id: 'D',   kind: 'ball', q:  0,   color: '#f2f2f0' },
+    { id: 'rod', kind: 'rod',  q:  2.6, color: '#cfe6f2', label: 'glass rod' }
+  ];
+
+  var RACK_Y = 505;
+  var RACK_X0 = 120, RACK_DX = 155;
+  var PIVOT_Y = 120, THREAD = 210;
+  var SLOT_X = [385, 515];
+
+  var items = ITEMS.map(function (it, i) {
+    return {
+      id: it.id, kind: it.kind, q: it.q, color: it.color, label: it.label || it.id,
+      homeX: RACK_X0 + i * RACK_DX, homeY: RACK_Y,
+      x: RACK_X0 + i * RACK_DX, y: RACK_Y,
+      slot: -1, swing: 0, swingV: 0, held: false
+    };
+  });
+
+  var slots = [null, null];
+  var log = [];
+
+  function radius(it) { return it.kind === 'rod' ? 34 : 26; }
+
+  // --- interaction ---------------------------------------------------------
+
+  function fit() {
+    var dpr = window.devicePixelRatio || 1;
+    var cw = canvas.clientWidth, ch = canvas.clientHeight;
+    if (!cw || !ch) return;
+    canvas.width = Math.round(cw * dpr);
+    canvas.height = Math.round(ch * dpr);
+    ctx.setTransform(canvas.width / W, 0, 0, canvas.height / H, 0, 0);
+  }
+  ctx = canvas.getContext('2d');
+  window.addEventListener('resize', fit);
+  if (window.ResizeObserver) new ResizeObserver(fit).observe(canvas);
+  setTimeout(fit, 0);
+
+  function toLogical(ev) {
+    var rect = canvas.getBoundingClientRect();
+    var pt = ev.touches ? ev.touches[0] : ev;
+    return { x: (pt.clientX - rect.left) * W / rect.width,
+             y: (pt.clientY - rect.top) * H / rect.height };
+  }
+
+  var held = null, ox = 0, oy = 0;
+  function down(ev) {
+    var p = toLogical(ev);
+    for (var i = items.length - 1; i >= 0; i--) {
+      var it = items[i];
+      var dx = p.x - it.x, dy = p.y - it.y, rr = radius(it) + 10;
+      if (dx * dx + dy * dy < rr * rr) {
+        ev.preventDefault();
+        held = it; it.held = true;
+        if (it.slot >= 0) { slots[it.slot] = null; it.slot = -1; announce(); }
+        ox = it.x - p.x; oy = it.y - p.y;
+        return;
+      }
+    }
+  }
+  function move(ev) {
+    if (!held) return;
+    ev.preventDefault();
+    var p = toLogical(ev);
+    held.x = p.x + ox; held.y = p.y + oy;
+  }
+  function up() {
+    if (!held) return;
+    var it = held;
+    it.held = false;
+    held = null;
+    // Snap onto the nearer free hook if it was dropped anywhere near one.
+    var best = -1, bestD = 150 * 150;
+    for (var s = 0; s < 2; s++) {
+      if (slots[s]) continue;
+      var dx = it.x - SLOT_X[s], dy = it.y - (PIVOT_Y + THREAD);
+      var d = dx * dx + dy * dy;
+      if (d < bestD) { bestD = d; best = s; }
+    }
+    if (best >= 0) {
+      slots[best] = it; it.slot = best; it.swing = 0; it.swingV = 0;
+    } else {
+      it.x = it.homeX; it.y = it.homeY;
+    }
+    announce();
+  }
+  canvas.addEventListener('mousedown', down);
+  window.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', up);
+  canvas.addEventListener('touchstart', down, { passive: false });
+  window.addEventListener('touchmove', move, { passive: false });
+  window.addEventListener('touchend', up);
+
+  document.getElementById('clearslots').addEventListener('click', function () {
+    for (var s = 0; s < 2; s++) {
+      if (slots[s]) { slots[s].x = slots[s].homeX; slots[s].y = slots[s].homeY; slots[s].slot = -1; slots[s] = null; }
+    }
+    announce();
+  });
+  document.getElementById('clearlog').addEventListener('click', function () {
+    log = []; renderLog();
+  });
+
+  // --- what the pair does ---------------------------------------------------
+
+  /** Sign of the interaction between two items: 1 repel, -1 attract, 0 none. */
+  function interaction(a, b) {
+    if (a.q !== 0 && b.q !== 0) return a.q * b.q > 0 ? 1 : -1;
+    if (a.q !== 0 || b.q !== 0) return -1;   // charged pulls on neutral
+    return 0;
+  }
+  function strength(a, b) {
+    if (a.q !== 0 && b.q !== 0) return Math.min(1, Math.abs(a.q * b.q) / 6);
+    if (a.q !== 0 || b.q !== 0) return 0.42; // induction: real, but weaker
+    return 0;
+  }
+
+  function announce() {
+    var el = document.getElementById('result');
+    var a = slots[0], b = slots[1];
+    if (!a || !b) { el.textContent = 'put two things on the hooks'; return; }
+    var s = interaction(a, b);
+    var word = s > 0 ? 'they repel' : s < 0 ? 'they attract' : 'nothing happens';
+    el.textContent = a.label + ' and ' + b.label + ' - ' + word;
+    var line = a.id + ' + ' + b.id + ': ' + word;
+    if (log.indexOf(line) < 0) { log.push(line); renderLog(); }
+  }
+  function renderLog() {
+    document.getElementById('log').textContent =
+      log.length ? 'What you have found so far - ' + log.join('   ·   ')
+                 : 'No measurements yet.';
+  }
+
+  // --- drawing --------------------------------------------------------------
+
+  function drawBall(it, x, y) {
+    var r = radius(it);
+    var g = ctx.createRadialGradient(x - r * 0.35, y - r * 0.35, r * 0.15, x, y, r);
+    g.addColorStop(0, '#ffffff');
+    g.addColorStop(1, '#dfe3e6');
+    ctx.fillStyle = g;
+    ctx.strokeStyle = '#9aa3ac'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#33404d';
+    ctx.font = 'bold 19px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(it.id, x, y + 1);
+  }
+
+  function drawRod(it, x, y) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(-Math.PI / 14);   // hangs almost upright
+    ctx.fillStyle = 'rgba(190,225,240,0.9)';
+    ctx.strokeStyle = '#7fa9bd'; ctx.lineWidth = 1.5;
+    CS.roundRect(ctx, -13, -46, 26, 92, 12);
+    ctx.fill(); ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = '#55606b';
+    ctx.font = '12px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('glass rod', x, y + 52);
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+
+    // support bar the two threads hang from
+    ctx.strokeStyle = '#8e99a4'; ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.moveTo(300, PIVOT_Y); ctx.lineTo(600, PIVOT_Y); ctx.stroke();
+    ctx.fillStyle = '#aeb8c2'; ctx.font = '12px Arial'; ctx.textAlign = 'center';
+    ctx.fillText('hooks', 450, PIVOT_Y - 12);
+
+    // shelf the spare items sit on
+    ctx.strokeStyle = '#e3e9ef'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(40, RACK_Y + 46); ctx.lineTo(W - 40, RACK_Y + 46); ctx.stroke();
+
+    // hanging pair
+    var a = slots[0], b = slots[1], i;
+    var sgn = (a && b) ? interaction(a, b) : 0;
+    var amp = (a && b) ? strength(a, b) * 58 : 0;
+    for (i = 0; i < 2; i++) {
+      var it = slots[i];
+      if (!it || it.held) continue;
+      var dir = i === 0 ? 1 : -1;              // slot 0 swings right toward slot 1
+      var target = sgn === 0 ? 0 : -sgn * dir * amp;
+      it.swingV = (it.swingV + (target - it.swing) * 0.06) * 0.90;
+      it.swing += it.swingV;
+      it.x = SLOT_X[i] + it.swing;
+      it.y = PIVOT_Y + Math.sqrt(Math.max(1, THREAD * THREAD - it.swing * it.swing));
+      ctx.strokeStyle = '#b6bfc8'; ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.moveTo(SLOT_X[i], PIVOT_Y); ctx.lineTo(it.x, it.y); ctx.stroke();
+    }
+    // empty hook markers
+    for (i = 0; i < 2; i++) {
+      if (slots[i]) continue;
+      ctx.strokeStyle = '#d5dee7'; ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 5]);
+      ctx.beginPath(); ctx.moveTo(SLOT_X[i], PIVOT_Y); ctx.lineTo(SLOT_X[i], PIVOT_Y + THREAD); ctx.stroke();
+      ctx.beginPath(); ctx.arc(SLOT_X[i], PIVOT_Y + THREAD, 26, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    for (i = 0; i < items.length; i++) {
+      var t = items[i];
+      if (t.kind === 'rod') drawRod(t, t.x, t.y); else drawBall(t, t.x, t.y);
+    }
+  }
+
+  function frame() { draw(); requestAnimationFrame(frame); }
+  renderLog();
+  frame();
+})();
+</script>
+</body>
+</html>

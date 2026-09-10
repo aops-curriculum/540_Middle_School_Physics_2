@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="eigennode-aspect" content="3/2">
+<title>Positive and Negative Charge Inside Everything</title>
+<link rel="stylesheet" href="shared/sim.css">
+</head>
+<body>
+
+<p id="hint">Now everything holds <b>both</b> kinds of charge, red (negative) and blue (positive). A neutral object holds equal amounts, so they cancel.</p>
+
+<div id="cwrap"><div id="stage"><canvas id="canvas"></canvas></div></div>
+
+<div id="controls">
+  <div class="row">
+    <button id="power">Turn the stick on</button>
+    <button id="reset">Start over</button>
+  </div>
+  <div class="row"><span class="note">Watch what happens inside a neutral flyer when you bring the charged stick near it.</span></div>
+</div>
+
+<script src="shared/charges.js"></script>
+<script src="shared/flystick-scene.js"></script>
+<script>
+buildFlyStickScene({
+  canvas: document.getElementById('canvas'),
+  model: 'two',
+  powerBtn: document.getElementById('power'),
+  resetBtn: document.getElementById('reset')
+});
+</script>
+</body>
+</html>
