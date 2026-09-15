@@ -64,6 +64,17 @@ function fit() {
   draw();
 }
 
+/* ─── the wand, measured down from its charging tip ────────────── */
+const HW       = 9;     /* half-width of the tube */
+const PALE_END = 64;    /* pale printed section with the logo */
+const GUARD_0  = 92, GUARD_1 = 118;
+const BTN_Y    = 128;   /* red power button */
+const OR1_0    = 136, OR1_1 = 144;
+const TEAL_1   = 200;
+const OR2_1    = 208;
+const CAP_0    = 204, CAP_1 = 240, CAP_HW = 11.5;
+const WAND_LEN = 240;
+
 /* ─── physics constants ────────────────────────────────────────── */
 const G    = 700 * CFG.gravity;
 const KREP = 8.5e6 * CFG.strength;   // like charges push apart
@@ -74,12 +85,12 @@ const KPAP = 4.8e6 * CFG.strength;   // charged stick pulls paper
 let stick, flyers, papers, hand, glove, sparks, hover, drag, prev;
 
 function reset() {
-  stick = { x: 200, y: 300, on: CFG.power, crackle: 0 };
+  stick = { x: 200, y: 268, on: CFG.power, crackle: 0 };
   flyers = [];
   const fx = [400, 520, 645];
   for (let i = 0; i < CFG.nflyers; i++)
-    flyers.push({ x: fx[i], y: FLOOR - 16, vx: 0, vy: 0, q: 0, r: 30,
-                  rot: i * 0.5, held: false });
+    flyers.push({ x: fx[i], y: FLOOR - 30, vx: 0, vy: 0, q: 0, r: 30,
+                  rot: i * 0.5 - 0.25, held: false });
   papers = [];
   for (let i = 0; i < CFG.npapers; i++)
     papers.push({ x: 600 + i * 26, y: FLOOR - 5, vx: 0, vy: 0,
@@ -124,11 +135,19 @@ function handTouch() {
   return { x: hand.x - 6.5, y: hand.y - 52 };
 }
 
+/* the whole wand is live, so a hand anywhere along it drains the charge */
+function handOnWand() {
+  const ht = handTouch();
+  if (!ht) return null;
+  const dx = ht.x - stick.x, dy = ht.y - stick.y;
+  if (dx < -34 || dx > 34) return null;
+  if (dy < -34 || dy > WAND_LEN + 16) return null;
+  return ht;
+}
+
 function stickCharge() {
   if (!stick.on) return 0;
-  const ht = handTouch();
-  if (ht && Math.hypot(ht.x - stick.x, ht.y - stick.y) < 34) return 0;
-  return 1;
+  return handOnWand() ? 0 : 1;
 }
 
 /* ─── physics ──────────────────────────────────────────────────── */
@@ -137,21 +156,22 @@ let drainCd = 0;
 function step(dt) {
   const sq = stickCharge();
   const ht = handTouch();
+  const onWand = handOnWand();
   drainCd = Math.max(0, drainCd - dt);
 
   if (glove.worn) { glove.x = hand.x; glove.y = hand.y; }
 
   /* hand shorting out the stick */
-  if (stick.on && sq === 0 && ht && drainCd === 0) {
-    addSpark(stick.x, stick.y, 3); drainCd = 0.28;
+  if (stick.on && sq === 0 && onWand && drainCd === 0) {
+    addSpark(onWand.x, onWand.y, 3); drainCd = 0.28;
   }
 
-  /* crackle at the ring while the stick is charged */
+  /* crackle at the tip while the stick is charged */
   if (sq > 0) {
     stick.crackle -= dt;
     if (stick.crackle <= 0) {
       stick.crackle = 0.25 + Math.random() * 0.35;
-      addSpark(stick.x + (Math.random() - 0.5) * 44, stick.y + (Math.random() - 0.5) * 8, 1);
+      addSpark(stick.x + (Math.random() - 0.5) * 16, stick.y + (Math.random() - 0.5) * 12, 1);
     }
   }
 
@@ -165,12 +185,12 @@ function step(dt) {
       f.q = 0; addSpark(ht.x, ht.y, 3);
     }
 
-    /* touching the charged ring loads the flyer up with the same charge */
-    if (sq > 0 && r < 32 && f.q < 1) {
+    /* touching the charged tip loads the flyer up with the same charge */
+    if (sq > 0 && r < 34 && f.q < 1) {
       f.q = Math.min(1, f.q + dt / 0.35);
       if (!f.held) {
         f.x += (stick.x - f.x) * 0.35;
-        f.y += (stick.y - 6 - f.y) * 0.35;
+        f.y += (stick.y - 10 - f.y) * 0.35;
         f.vx = 0; f.vy = f.q >= 1 ? -50 : 0;
       }
       if (f.q < 1 && Math.random() < dt * 8) addSpark(stick.x, stick.y, 1);
@@ -195,7 +215,7 @@ function step(dt) {
     f.vx += ax * dt; f.vy += ay * dt;
     f.x += f.vx * dt; f.y += f.vy * dt;
 
-    const rest = FLOOR - 16;
+    const rest = FLOOR - f.r;
     if (f.y > rest) { f.y = rest; f.vy *= -0.15; f.vx *= 0.75; }
     if (f.y < f.r + 6) { f.y = f.r + 6; f.vy = Math.max(0, f.vy); }
     if (f.x < f.r) { f.x = f.r; f.vx *= -0.4; }
@@ -262,47 +282,115 @@ function drawStick() {
   const x = stick.x, y = stick.y;
 
   if (sq > 0) {
-    const g = ctx.createRadialGradient(x, y, 0, x, y, 82);
+    const g = ctx.createRadialGradient(x, y, 0, x, y, 78);
     g.addColorStop(0, 'rgba(90,160,255,0.30)');
     g.addColorStop(1, 'rgba(90,160,255,0)');
     ctx.fillStyle = g;
-    ctx.beginPath(); ctx.arc(x, y, 82, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(x, y, 78, 0, 7); ctx.fill();
   }
 
-  /* handle */
-  ctx.fillStyle = '#2c3e50';
-  roundRect(x - 15, y + 26, 30, 168, 11); ctx.fill();
-  ctx.fillStyle = 'rgba(255,255,255,0.10)';
-  roundRect(x - 11, y + 32, 8, 152, 4); ctx.fill();
-  ctx.fillStyle = '#1b2836';
-  roundRect(x - 15, y + 120, 30, 74, 11); ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = 2;
-  for (let i = 0; i < 4; i++) {
+  ctx.save();
+  ctx.translate(x, y);
+
+  /* soft shadow under the wand */
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.10)';
+  roundRect(-HW + 3, 3, HW * 2, WAND_LEN, HW); ctx.fill();
+  ctx.restore();
+
+  /* ── the painted tube ── */
+  ctx.save();
+  roundRect(-HW, 0, HW * 2, WAND_LEN, HW);
+  ctx.clip();
+
+  /* pale printed nose with the logo */
+  ctx.fillStyle = '#ddf0fb'; ctx.fillRect(-HW, 0, HW * 2, PALE_END);
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  for (let i = 0; i < 5; i++) {
     ctx.beginPath();
-    ctx.moveTo(x - 11, y + 134 + i * 14); ctx.lineTo(x + 11, y + 134 + i * 14);
+    ctx.ellipse(-4 + (i % 2) * 8, 10 + i * 12, 5, 3.4, 0.5, 0, 7);
+    ctx.fill();
+  }
+  ctx.fillStyle = 'rgba(120,190,225,0.5)';
+  ctx.beginPath(); ctx.ellipse(0, 6, 7, 5, 0, 0, 7); ctx.fill();
+
+  /* plain blue shaft */
+  ctx.fillStyle = '#1f93c8'; ctx.fillRect(-HW, PALE_END, HW * 2, OR1_0 - PALE_END);
+  /* orange collar */
+  ctx.fillStyle = '#f2a01e'; ctx.fillRect(-HW, OR1_0, HW * 2, OR1_1 - OR1_0);
+  /* striped teal grip */
+  ctx.fillStyle = '#2fb2cf'; ctx.fillRect(-HW, OR1_1, HW * 2, TEAL_1 - OR1_1);
+  ctx.fillStyle = '#2596b3';
+  for (let s = OR1_1 + 3; s < TEAL_1; s += 13) ctx.fillRect(-HW, s, HW * 2, 6);
+  /* second orange collar */
+  ctx.fillStyle = '#f2a01e'; ctx.fillRect(-HW, TEAL_1, HW * 2, OR2_1 - TEAL_1);
+  /* butt end */
+  ctx.fillStyle = '#1b6fa8'; ctx.fillRect(-HW, OR2_1, HW * 2, WAND_LEN - OR2_1);
+
+  /* yellow squiggles on the grip */
+  ctx.strokeStyle = '#ffd84d'; ctx.lineWidth = 2.2; ctx.lineCap = 'round';
+  for (let i = 0; i < 3; i++) {
+    const t = OR1_1 + 10 + i * 18;
+    ctx.beginPath();
+    ctx.moveTo(-6, t);
+    ctx.bezierCurveTo(2, t + 3, -3, t + 8, 6, t + 10);
     ctx.stroke();
   }
 
-  /* neck */
-  ctx.strokeStyle = '#7f8c8d'; ctx.lineWidth = 5; ctx.lineCap = 'round';
-  ctx.beginPath(); ctx.moveTo(x, y + 4); ctx.lineTo(x, y + 28); ctx.stroke();
-
-  /* charging ring */
+  /* logo down the nose */
   ctx.save();
-  ctx.translate(x, y); ctx.scale(1, 0.32);
-  ctx.beginPath(); ctx.arc(0, 0, 27, 0, 7);
-  ctx.strokeStyle = sq > 0 ? '#5a9ded' : '#95a5a6';
-  ctx.lineWidth = sq > 0 ? 16 : 14;
-  ctx.stroke();
-  ctx.beginPath(); ctx.arc(0, 0, 27, 0, 7);
-  ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 4; ctx.stroke();
+  ctx.translate(0, 36); ctx.rotate(-Math.PI / 2);
+  ctx.font = 'bold italic 13px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineWidth = 3; ctx.strokeStyle = '#ffffff';
+  ctx.strokeText('Fly-Stick', 0, 0);
+  ctx.fillStyle = '#f2a01e';
+  ctx.fillText('Fly-Stick', 0, 0);
+  ctx.restore();
+
+  /* gloss */
+  ctx.fillStyle = 'rgba(255,255,255,0.32)';
+  roundRect(-HW + 2, 4, 3.6, WAND_LEN - 10, 1.8); ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,0.13)';
+  roundRect(HW - 4.5, 4, 3.2, WAND_LEN - 10, 1.6); ctx.fill();
+  ctx.restore();
+
+  ctx.strokeStyle = 'rgba(20,60,90,0.35)'; ctx.lineWidth = 1.3;
+  roundRect(-HW, 0, HW * 2, WAND_LEN, HW); ctx.stroke();
+
+  /* ── ribbed collar and the little flag, both stand proud of the tube ── */
+  ctx.fillStyle = '#1f93c8';
+  ctx.strokeStyle = 'rgba(20,60,90,0.35)'; ctx.lineWidth = 1.3;
+  roundRect(-HW - 14, GUARD_0 - 2, 16, 26, 4); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.22)';
+  roundRect(-HW - 11, GUARD_0 + 1, 4, 19, 2); ctx.fill();
+  for (let i = 0; i < 4; i++) {
+    ctx.fillStyle = '#1a7fb0';
+    roundRect(-HW - 2.5, GUARD_0 + i * 6.5, (HW + 2.5) * 2, 4.4, 2.2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(20,60,90,0.3)'; ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  /* ── rounded butt cap ── */
+  ctx.fillStyle = '#1b6fa8';
+  roundRect(-CAP_HW, CAP_0, CAP_HW * 2, CAP_1 - CAP_0, CAP_HW);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(20,60,90,0.4)'; ctx.lineWidth = 1.3; ctx.stroke();
+  for (let i = 0; i < 3; i++) {
+    ctx.fillStyle = '#14577f';
+    roundRect(-CAP_HW, CAP_0 + 3 + i * 6, CAP_HW * 2, 3.4, 1.7); ctx.fill();
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.25)';
+  roundRect(-CAP_HW + 2.5, CAP_0 + 3, 3.4, 26, 1.7); ctx.fill();
+
   ctx.restore();
 
   if (CFG.charges && sq > 0) {
     ctx.strokeStyle = '#2b6fd0'; ctx.lineWidth = 2;
-    for (let i = 0; i < 6; i++) {
-      const a = i * Math.PI / 3;
-      const px = x + Math.cos(a) * 40, py = y + Math.sin(a) * 15;
+    for (let i = 0; i < 5; i++) {
+      const a = -Math.PI + i * Math.PI / 4;
+      const px = x + Math.cos(a) * 30, py = y + Math.sin(a) * 26;
       ctx.beginPath();
       ctx.moveTo(px - 4, py); ctx.lineTo(px + 4, py);
       ctx.moveTo(px, py - 4); ctx.lineTo(px, py + 4);
@@ -314,68 +402,86 @@ function drawStick() {
 }
 
 function drawPowerButton() {
-  const bx = stick.x, by = stick.y + 78;
+  const bx = stick.x, by = stick.y + BTN_Y;
   const on = stick.on;
   const hot = hover === 'power';
 
   if (on) {
-    const g = ctx.createRadialGradient(bx, by, 4, bx, by, 24);
-    g.addColorStop(0, 'rgba(255,90,70,0.40)');
-    g.addColorStop(1, 'rgba(255,90,70,0)');
+    const g = ctx.createRadialGradient(bx, by, 2, bx, by, 20);
+    g.addColorStop(0, 'rgba(255,60,40,0.45)');
+    g.addColorStop(1, 'rgba(255,60,40,0)');
     ctx.fillStyle = g;
-    ctx.beginPath(); ctx.arc(bx, by, 24, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(bx, by, 20, 0, 7); ctx.fill();
   }
-  ctx.beginPath(); ctx.arc(bx, by, 14, 0, 7);
-  ctx.fillStyle = hot ? '#61788e' : '#4a5f73'; ctx.fill();
-  ctx.beginPath(); ctx.arc(bx, by, 11, 0, 7);
-  ctx.fillStyle = on ? '#ff5b4a' : '#22303e'; ctx.fill();
-  ctx.strokeStyle = on ? '#ffb9b0' : '#607588'; ctx.lineWidth = 1.5; ctx.stroke();
-
-  ctx.strokeStyle = on ? '#ffffff' : '#93a9be';
-  ctx.lineWidth = 2; ctx.lineCap = 'round';
-  ctx.beginPath(); ctx.arc(bx, by, 5.5, -0.32 * Math.PI, 1.32 * Math.PI); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(bx, by - 8.5); ctx.lineTo(bx, by - 2.5); ctx.stroke();
+  ctx.beginPath(); ctx.arc(bx, by, hot ? 9 : 8.2, 0, 7);
+  ctx.fillStyle = '#12506f'; ctx.fill();
+  ctx.beginPath(); ctx.arc(bx, by, 6, 0, 7);
+  ctx.fillStyle = on ? '#ff3b26' : '#b03226'; ctx.fill();
+  ctx.beginPath(); ctx.arc(bx - 1.6, by - 1.8, 2.1, 0, 7);
+  ctx.fillStyle = on ? 'rgba(255,220,210,0.95)' : 'rgba(255,255,255,0.35)'; ctx.fill();
 }
 
+/* the flyer is a twisted strip of metallized plastic, closed into a loop */
 function drawFlyer(f) {
   ctx.save();
   ctx.translate(f.x, f.y); ctx.rotate(f.rot);
-  const R = f.r, r2 = R * 0.5;
+  const R = f.r;
+  const A = R * 0.54, B = R * 0.98, WMAX = R * 0.28;
 
   if (f.q > 0.05) {
-    const g = ctx.createRadialGradient(0, 0, R * 0.4, 0, 0, R * 1.5);
+    const g = ctx.createRadialGradient(0, 0, R * 0.3, 0, 0, R * 1.5);
     g.addColorStop(0, 'rgba(90,160,255,0.22)');
     g.addColorStop(1, 'rgba(90,160,255,0)');
     ctx.fillStyle = g;
     ctx.beginPath(); ctx.arc(0, 0, R * 1.5, 0, 7); ctx.fill();
   }
 
-  ctx.beginPath();
-  for (let i = 0; i < 12; i++) {
-    const a = i * Math.PI / 6 - Math.PI / 2;
-    const rr = (i % 2) ? r2 : R;
-    const px = rr * Math.cos(a), py = rr * Math.sin(a) * 0.92;
-    if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+  const N = 132, outer = [], inner = [];
+  for (let i = 0; i <= N; i++) {
+    const t = i / N * Math.PI * 2;
+    const cx = A * Math.sin(2 * t), cy = B * Math.cos(t);
+    const tx = 2 * A * Math.cos(2 * t), ty = -B * Math.sin(t);
+    const m = Math.hypot(tx, ty) || 1;
+    const nx = -ty / m, ny = tx / m;
+    const w = WMAX * (0.14 + 0.86 * Math.abs(Math.cos(1.5 * t)));
+    outer.push([cx + nx * w, cy + ny * w]);
+    inner.push([cx - nx * w, cy - ny * w]);
   }
-  ctx.closePath();
-  ctx.fillStyle = 'rgba(224,236,246,0.6)'; ctx.fill();
-  ctx.lineJoin = 'round';
-  ctx.strokeStyle = '#8fa6bd'; ctx.lineWidth = 2.5; ctx.stroke();
 
   ctx.beginPath();
-  for (let i = 0; i < 6; i++) {
-    const a = i * Math.PI / 3 - Math.PI / 2;
-    const px = r2 * 0.9 * Math.cos(a), py = r2 * 0.9 * Math.sin(a) * 0.92;
-    if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
-  }
+  ctx.moveTo(outer[0][0], outer[0][1]);
+  for (let i = 1; i <= N; i++) ctx.lineTo(outer[i][0], outer[i][1]);
+  for (let i = N; i >= 0; i--) ctx.lineTo(inner[i][0], inner[i][1]);
   ctx.closePath();
-  ctx.strokeStyle = '#bacbdb'; ctx.lineWidth = 1.5; ctx.stroke();
+
+  const g2 = ctx.createLinearGradient(-A * 1.3, -B, A * 1.3, B);
+  g2.addColorStop(0.00, '#dfe7ed');
+  g2.addColorStop(0.14, '#ffffff');
+  g2.addColorStop(0.30, '#b4c3ce');
+  g2.addColorStop(0.46, '#f6f9fb');
+  g2.addColorStop(0.62, '#9fb0bd');
+  g2.addColorStop(0.78, '#f2f6f9');
+  g2.addColorStop(1.00, '#c2cdd6');
+  ctx.fillStyle = g2; ctx.fill();
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = '#8fa1af'; ctx.lineWidth = 1.1; ctx.stroke();
+
+  /* a couple of bright glints where the strip faces you */
+  ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 1.6; ctx.lineCap = 'round';
+  for (const t0 of [0.15, 2.25, 4.35]) {
+    ctx.beginPath();
+    for (let k = 0; k <= 8; k++) {
+      const t = t0 + k * 0.05;
+      const px = A * Math.sin(2 * t), py = B * Math.cos(t);
+      if (k) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+    }
+    ctx.stroke();
+  }
 
   if (CFG.charges && f.q > 0.05) {
     ctx.strokeStyle = '#2b6fd0'; ctx.lineWidth = 2;
-    for (let i = 0; i < 6; i++) {
-      const a = i * Math.PI / 3 - Math.PI / 2;
-      const px = R * 0.72 * Math.cos(a), py = R * 0.72 * Math.sin(a) * 0.92;
+    for (const t of [0.5, 2.2, 3.9, 5.5]) {
+      const px = A * Math.sin(2 * t) * 1.35, py = B * Math.cos(t) * 1.1;
       ctx.beginPath();
       ctx.moveTo(px - 4, py); ctx.lineTo(px + 4, py);
       ctx.moveTo(px, py - 4); ctx.lineTo(px, py + 4);
@@ -517,7 +623,7 @@ function toLogical(e) {
 function hitTest(x, y) {
   if (CFG.resetbtn && Math.hypot(x - RESET_X, y - RESET_Y) < RESET_R + 6)
     return { type: 'reset' };
-  if (Math.hypot(x - stick.x, y - (stick.y + 78)) < 16)
+  if (Math.hypot(x - stick.x, y - (stick.y + BTN_Y)) < 15)
     return { type: 'power' };
   if (CFG.glove && Math.hypot(x - glove.x, y - glove.y) < (glove.worn ? 34 : 46))
     return { type: 'glove' };
@@ -529,7 +635,7 @@ function hitTest(x, y) {
   for (let i = papers.length - 1; i >= 0; i--)
     if (Math.abs(x - papers[i].x) < 17 && Math.abs(y - papers[i].y) < 15)
       return { type: 'paper', o: papers[i] };
-  if (x > stick.x - 23 && x < stick.x + 23 && y > stick.y - 16 && y < stick.y + 200)
+  if (x > stick.x - 26 && x < stick.x + 20 && y > stick.y - 14 && y < stick.y + WAND_LEN + 6)
     return { type: 'stick' };
   return null;
 }
@@ -566,7 +672,7 @@ function move(x, y) {
   const nx = x + drag.ox, ny = y + drag.oy;
   if (drag.type === 'stick') {
     stick.x = Math.max(40, Math.min(W - 40, nx));
-    stick.y = Math.max(70, Math.min(480, ny));
+    stick.y = Math.max(60, Math.min(340, ny));
   } else if (drag.type === 'hand') {
     hand.x = Math.max(50, Math.min(W - 50, nx));
     hand.y = Math.max(70, Math.min(H - 40, ny));
