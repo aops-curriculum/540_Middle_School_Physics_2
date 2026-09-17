@@ -5,248 +5,604 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="eigennode-aspect" content="3/2">
 <title>Four Foam Balls and a Glass Rod</title>
-<link rel="stylesheet" href="shared/sim.css">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    background: #ffffff;
+    font-family: Arial, sans-serif;
+    user-select: none; -webkit-user-select: none;
+    touch-action: none;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
 </head>
 <body>
+<canvas id="c"></canvas>
 
-<p id="hint">Drag any two items onto the two hooks in the middle. They hang on threads, so you can see whether they pull together, push apart, or do nothing. The glass rod was rubbed with wool, so it is positive.</p>
-
-<div id="cwrap"><div id="stage"><canvas id="canvas"></canvas></div></div>
-
-<div id="controls">
-  <div class="row">
-    <span>Result: <span class="readout" id="result">put two things on the hooks</span></span>
-    <span class="sep">|</span>
-    <button id="clearslots">Take them down</button>
-    <button id="clearlog">Clear the record</button>
-  </div>
-  <div class="row"><span class="note" id="log">No measurements yet.</span></div>
-</div>
-
-<script src="shared/charges.js"></script>
 <script>
 (function () {
-  var CS = window.ChargeSim;
-  var W = 900, H = 600;
-  var canvas = document.getElementById('canvas');
-  var ctx;
+'use strict';
 
-  // The answer the lesson works toward: A negative, B positive, C and D neutral.
-  var ITEMS = [
-    { id: 'A',   kind: 'ball', q: -2.2, color: '#f2f2f0' },
-    { id: 'B',   kind: 'ball', q:  2.2, color: '#f2f2f0' },
-    { id: 'C',   kind: 'ball', q:  0,   color: '#f2f2f0' },
-    { id: 'D',   kind: 'ball', q:  0,   color: '#f2f2f0' },
-    { id: 'rod', kind: 'rod',  q:  2.6, color: '#cfe6f2', label: 'glass rod' }
-  ];
+/* ─── query params ─────────────────────────────────────────────── */
+const Q    = new URLSearchParams(location.search);
+const num  = (k, d) => Q.has(k) && isFinite(+Q.get(k)) ? +Q.get(k) : d;
+const bool = (k, d) => Q.has(k) ? Q.get(k) !== '0' : d;
 
-  var RACK_Y = 505;
-  var RACK_X0 = 120, RACK_DX = 155;
-  var PIVOT_Y = 120, THREAD = 210;
-  var SLOT_X = [385, 515];
+const CFG = {
+  labels:   bool('labels', true),
+  record:   bool('record', true),
+  /* off by default: working out which ball is which is the whole point */
+  answers:  bool('answers', false),
+  resetbtn: bool('resetbtn', true),
+  swing:    Math.max(0.1, num('swing', 1))
+};
 
-  var items = ITEMS.map(function (it, i) {
-    return {
-      id: it.id, kind: it.kind, q: it.q, color: it.color, label: it.label || it.id,
-      homeX: RACK_X0 + i * RACK_DX, homeY: RACK_Y,
-      x: RACK_X0 + i * RACK_DX, y: RACK_Y,
-      slot: -1, swing: 0, swingV: 0, held: false
-    };
-  });
+/* ─── canvas ───────────────────────────────────────────────────── */
+const DESIGN_W = 900, DESIGN_H = 600;
+const W = DESIGN_W, H = DESIGN_H;
+const FLOOR = 520;
+const RESET_X = 856, RESET_Y = 558, RESET_R = 16;
 
-  var slots = [null, null];
-  var log = [];
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
 
-  function radius(it) { return it.kind === 'rod' ? 34 : 26; }
+function fit() {
+  const dpr = window.devicePixelRatio || 1;
+  const cw = canvas.clientWidth, ch = canvas.clientHeight;
+  if (!cw || !ch) return;
+  canvas.width  = Math.round(cw * dpr);
+  canvas.height = Math.round(ch * dpr);
+  ctx.setTransform(canvas.width / DESIGN_W, 0, 0, canvas.height / DESIGN_H, 0, 0);
+  draw();
+}
 
-  // --- interaction ---------------------------------------------------------
+/* ─── the bench ────────────────────────────────────────────────── */
+const BAR_Y = 112, BAR_X0 = 296, BAR_X1 = 614;
+const THREAD = 198;
+const SLOT_X = [390, 520];
+const SHELF_X = [120, 258, 396, 534, 700];
 
-  function fit() {
-    var dpr = window.devicePixelRatio || 1;
-    var cw = canvas.clientWidth, ch = canvas.clientHeight;
-    if (!cw || !ch) return;
-    canvas.width = Math.round(cw * dpr);
-    canvas.height = Math.round(ch * dpr);
-    ctx.setTransform(canvas.width / W, 0, 0, canvas.height / H, 0, 0);
-  }
-  ctx = canvas.getContext('2d');
-  window.addEventListener('resize', fit);
-  if (window.ResizeObserver) new ResizeObserver(fit).observe(canvas);
-  setTimeout(fit, 0);
+/* The answer the lesson works toward: A negative, B positive, C and D
+   neutral. Nothing in the sim ever says so; you have to hang them in
+   pairs and work it out. */
+const ITEMS = [
+  { id: 'A',   kind: 'ball', q: -2.2 },
+  { id: 'B',   kind: 'ball', q:  2.2 },
+  { id: 'C',   kind: 'ball', q:  0   },
+  { id: 'D',   kind: 'ball', q:  0   },
+  { id: 'rod', kind: 'rod',  q:  2.6, label: 'glass rod' }
+];
 
-  function toLogical(ev) {
-    var rect = canvas.getBoundingClientRect();
-    var pt = ev.touches ? ev.touches[0] : ev;
-    return { x: (pt.clientX - rect.left) * W / rect.width,
-             y: (pt.clientY - rect.top) * H / rect.height };
-  }
+function radius(it) { return it.kind === 'rod' ? 32 : 26; }
+/* how far the item reaches below its middle, so it rests on the shelf
+   instead of sinking through it */
+function halfH(it) { return it.kind === 'rod' ? 48 : 26; }
 
-  var held = null, ox = 0, oy = 0;
-  function down(ev) {
-    var p = toLogical(ev);
-    for (var i = items.length - 1; i >= 0; i--) {
-      var it = items[i];
-      var dx = p.x - it.x, dy = p.y - it.y, rr = radius(it) + 10;
-      if (dx * dx + dy * dy < rr * rr) {
-        ev.preventDefault();
-        held = it; it.held = true;
-        if (it.slot >= 0) { slots[it.slot] = null; it.slot = -1; announce(); }
-        ox = it.x - p.x; oy = it.y - p.y;
-        return;
-      }
-    }
-  }
-  function move(ev) {
-    if (!held) return;
-    ev.preventDefault();
-    var p = toLogical(ev);
-    held.x = p.x + ox; held.y = p.y + oy;
-  }
-  function up() {
-    if (!held) return;
-    var it = held;
-    it.held = false;
-    held = null;
-    // Snap onto the nearer free hook if it was dropped anywhere near one.
-    var best = -1, bestD = 150 * 150;
-    for (var s = 0; s < 2; s++) {
-      if (slots[s]) continue;
-      var dx = it.x - SLOT_X[s], dy = it.y - (PIVOT_Y + THREAD);
-      var d = dx * dx + dy * dy;
-      if (d < bestD) { bestD = d; best = s; }
-    }
-    if (best >= 0) {
-      slots[best] = it; it.slot = best; it.swing = 0; it.swingV = 0;
-    } else {
-      it.x = it.homeX; it.y = it.homeY;
-    }
-    announce();
-  }
-  canvas.addEventListener('mousedown', down);
-  window.addEventListener('mousemove', move);
-  window.addEventListener('mouseup', up);
-  canvas.addEventListener('touchstart', down, { passive: false });
-  window.addEventListener('touchmove', move, { passive: false });
-  window.addEventListener('touchend', up);
+/* ─── state ────────────────────────────────────────────────────── */
+let items, slots, record, hover, drag;
 
-  document.getElementById('clearslots').addEventListener('click', function () {
-    for (var s = 0; s < 2; s++) {
-      if (slots[s]) { slots[s].x = slots[s].homeX; slots[s].y = slots[s].homeY; slots[s].slot = -1; slots[s] = null; }
-    }
-    announce();
-  });
-  document.getElementById('clearlog').addEventListener('click', function () {
-    log = []; renderLog();
-  });
+function reset() {
+  items = ITEMS.map((it, i) => ({
+    id: it.id, kind: it.kind, q: it.q, label: it.label || it.id,
+    homeX: SHELF_X[i], homeY: FLOOR - halfH(it) - 3,
+    x: SHELF_X[i], y: FLOOR - halfH(it) - 3,
+    slot: -1, swing: 0, swingV: 0, held: false
+  }));
+  slots = [null, null];
+  record = [];
+  drag = null; hover = null;
+}
 
-  // --- what the pair does ---------------------------------------------------
+/* ─── what a pair does ─────────────────────────────────────────── */
+/** 1 they push apart, -1 they pull together, 0 nothing happens. */
+function interaction(a, b) {
+  if (a.q !== 0 && b.q !== 0) return a.q * b.q > 0 ? 1 : -1;
+  if (a.q !== 0 || b.q !== 0) return -1;   /* charged pulls on neutral */
+  return 0;
+}
+function strength(a, b) {
+  if (a.q !== 0 && b.q !== 0) return Math.min(1, Math.abs(a.q * b.q) / 6);
+  if (a.q !== 0 || b.q !== 0) return 0.42; /* induction: real, but weaker */
+  return 0;
+}
+function verdict(s) {
+  return s > 0 ? 'push apart' : s < 0 ? 'pull together' : 'do nothing';
+}
 
-  /** Sign of the interaction between two items: 1 repel, -1 attract, 0 none. */
-  function interaction(a, b) {
-    if (a.q !== 0 && b.q !== 0) return a.q * b.q > 0 ? 1 : -1;
-    if (a.q !== 0 || b.q !== 0) return -1;   // charged pulls on neutral
-    return 0;
-  }
-  function strength(a, b) {
-    if (a.q !== 0 && b.q !== 0) return Math.min(1, Math.abs(a.q * b.q) / 6);
-    if (a.q !== 0 || b.q !== 0) return 0.42; // induction: real, but weaker
-    return 0;
-  }
+function announce() {
+  let a = slots[0], b = slots[1];
+  if (!a || !b) return;
+  /* always name a pair the same way round, so hanging C and A reads as the
+     line you already have for A and C */
+  if (items.indexOf(a) > items.indexOf(b)) { const t = a; a = b; b = t; }
+  const line = a.label + ' and ' + b.label + ' ' + verdict(interaction(a, b));
+  if (record.indexOf(line) < 0) record.push(line);
+}
 
-  function announce() {
-    var el = document.getElementById('result');
-    var a = slots[0], b = slots[1];
-    if (!a || !b) { el.textContent = 'put two things on the hooks'; return; }
-    var s = interaction(a, b);
-    var word = s > 0 ? 'they repel' : s < 0 ? 'they attract' : 'nothing happens';
-    el.textContent = a.label + ' and ' + b.label + ' - ' + word;
-    var line = a.id + ' + ' + b.id + ': ' + word;
-    if (log.indexOf(line) < 0) { log.push(line); renderLog(); }
-  }
-  function renderLog() {
-    document.getElementById('log').textContent =
-      log.length ? 'What you have found so far - ' + log.join('   ·   ')
-                 : 'No measurements yet.';
+/* ─── drawing ──────────────────────────────────────────────────── */
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function drawFloor() {
+  const g = ctx.createLinearGradient(0, FLOOR, 0, FLOOR + 26);
+  g.addColorStop(0, 'rgba(0,0,0,0.055)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, FLOOR, W, 26);
+  ctx.strokeStyle = '#cfcfcf'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0, FLOOR); ctx.lineTo(W, FLOOR); ctx.stroke();
+}
+
+/* the bar across the top, with a hook under each hanging point */
+function drawBar() {
+  ctx.fillStyle = 'rgba(0,0,0,0.08)';
+  roundRect(BAR_X0 + 3, BAR_Y - 2, BAR_X1 - BAR_X0, 10, 5); ctx.fill();
+
+  const g = ctx.createLinearGradient(0, BAR_Y - 6, 0, BAR_Y + 6);
+  g.addColorStop(0, '#dfe5eb');
+  g.addColorStop(0.45, '#9aa5b0');
+  g.addColorStop(1, '#79848f');
+  ctx.fillStyle = g;
+  ctx.strokeStyle = '#6d7883'; ctx.lineWidth = 1.2;
+  roundRect(BAR_X0, BAR_Y - 5, BAR_X1 - BAR_X0, 10, 5);
+  ctx.fill(); ctx.stroke();
+
+  /* the two uprights that hold the bar up */
+  ctx.fillStyle = '#b3bcc5';
+  for (const x of [BAR_X0 + 5, BAR_X1 - 11]) {
+    roundRect(x, BAR_Y - 22, 6, 18, 3); ctx.fill();
   }
 
-  // --- drawing --------------------------------------------------------------
+  for (let i = 0; i < 2; i++) {
+    ctx.strokeStyle = '#8b959f'; ctx.lineWidth = 2.6; ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(SLOT_X[i], BAR_Y + 3);
+    ctx.arc(SLOT_X[i], BAR_Y + 9, 6, -Math.PI / 2, Math.PI * 0.75);
+    ctx.stroke();
+  }
+  if (CFG.labels) caption('hooks', (SLOT_X[0] + SLOT_X[1]) / 2, BAR_Y - 30, false);
+}
 
-  function drawBall(it, x, y) {
-    var r = radius(it);
-    var g = ctx.createRadialGradient(x - r * 0.35, y - r * 0.35, r * 0.15, x, y, r);
-    g.addColorStop(0, '#ffffff');
-    g.addColorStop(1, '#dfe3e6');
-    ctx.fillStyle = g;
-    ctx.strokeStyle = '#9aa3ac'; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = '#33404d';
-    ctx.font = 'bold 19px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(it.id, x, y + 1);
+const RED = '#d94141', BLUE = '#3466c4';
+
+function sign(x, y, positive, s) {
+  ctx.beginPath(); ctx.arc(x, y, s, 0, 7);
+  ctx.fillStyle = positive ? BLUE : RED; ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+  ctx.lineWidth = Math.max(1.2, s * 0.36); ctx.lineCap = 'butt';
+  ctx.beginPath();
+  ctx.moveTo(x - s * 0.52, y); ctx.lineTo(x + s * 0.52, y);
+  if (positive) { ctx.moveTo(x, y - s * 0.52); ctx.lineTo(x, y + s * 0.52); }
+  ctx.stroke();
+}
+
+/* a light foam ball, with its letter written on it */
+function drawBall(it) {
+  const x = it.x, y = it.y, r = radius(it);
+
+  ctx.fillStyle = 'rgba(0,0,0,0.09)';
+  ctx.beginPath(); ctx.ellipse(x + 3, y + 4, r, r, 0, 0, 7); ctx.fill();
+
+  const g = ctx.createRadialGradient(x - r * 0.38, y - r * 0.42, r * 0.12, x, y, r * 1.05);
+  g.addColorStop(0, '#ffffff');
+  g.addColorStop(0.55, '#f2f4f6');
+  g.addColorStop(1, '#ccd3d9');
+  ctx.fillStyle = g;
+  ctx.strokeStyle = '#9aa3ac'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); ctx.stroke();
+
+  /* the little pits that make foam look like foam */
+  ctx.fillStyle = 'rgba(150,163,175,0.28)';
+  let s = 9301;
+  const rnd = () => (s = (s * 9301 + 49297) % 233280) / 233280;
+  for (let i = 0; i < 26; i++) {
+    const a = rnd() * Math.PI * 2, rr = Math.sqrt(rnd()) * r * 0.86;
+    ctx.beginPath();
+    ctx.arc(x + Math.cos(a) * rr, y + Math.sin(a) * rr, 0.9 + rnd() * 1.3, 0, 7);
+    ctx.fill();
   }
 
-  function drawRod(it, x, y) {
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(-Math.PI / 14);   // hangs almost upright
-    ctx.fillStyle = 'rgba(190,225,240,0.9)';
-    ctx.strokeStyle = '#7fa9bd'; ctx.lineWidth = 1.5;
-    CS.roundRect(ctx, -13, -46, 26, 92, 12);
-    ctx.fill(); ctx.stroke();
-    ctx.restore();
-    ctx.fillStyle = '#55606b';
-    ctx.font = '12px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('glass rod', x, y + 52);
+  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  ctx.beginPath();
+  ctx.ellipse(x - r * 0.34, y - r * 0.38, r * 0.26, r * 0.17, -0.5, 0, 7);
+  ctx.fill();
+
+  ctx.fillStyle = '#33404d';
+  ctx.font = 'bold 19px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(it.id, x, y + 1);
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+
+  if (CFG.answers) {
+    if (it.q) sign(x + r * 0.72, y - r * 0.72, it.q > 0, 8.5);
+    else caption('neutral', x, y + r + 16, false);
   }
+}
 
-  function draw() {
-    ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+/* a glass rod, hanging almost upright */
+function drawRod(it) {
+  const x = it.x, y = it.y;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(-Math.PI / 16);
 
-    // support bar the two threads hang from
-    ctx.strokeStyle = '#8e99a4'; ctx.lineWidth = 5;
-    ctx.beginPath(); ctx.moveTo(300, PIVOT_Y); ctx.lineTo(600, PIVOT_Y); ctx.stroke();
-    ctx.fillStyle = '#aeb8c2'; ctx.font = '12px Arial'; ctx.textAlign = 'center';
-    ctx.fillText('hooks', 450, PIVOT_Y - 12);
+  ctx.fillStyle = 'rgba(0,0,0,0.08)';
+  roundRect(-11 + 3, -46 + 4, 22, 92, 11); ctx.fill();
 
-    // shelf the spare items sit on
-    ctx.strokeStyle = '#e3e9ef'; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(40, RACK_Y + 46); ctx.lineTo(W - 40, RACK_Y + 46); ctx.stroke();
+  const g = ctx.createLinearGradient(-11, 0, 11, 0);
+  g.addColorStop(0.00, 'rgba(150,200,220,0.75)');
+  g.addColorStop(0.22, 'rgba(245,252,255,0.95)');
+  g.addColorStop(0.50, 'rgba(198,228,242,0.85)');
+  g.addColorStop(0.80, 'rgba(240,250,255,0.92)');
+  g.addColorStop(1.00, 'rgba(140,190,212,0.8)');
+  ctx.fillStyle = g;
+  ctx.strokeStyle = '#7fa9bd'; ctx.lineWidth = 1.5;
+  roundRect(-11, -46, 22, 92, 11);
+  ctx.fill(); ctx.stroke();
 
-    // hanging pair
-    var a = slots[0], b = slots[1], i;
-    var sgn = (a && b) ? interaction(a, b) : 0;
-    var amp = (a && b) ? strength(a, b) * 58 : 0;
-    for (i = 0; i < 2; i++) {
-      var it = slots[i];
-      if (!it || it.held) continue;
-      var dir = i === 0 ? 1 : -1;              // slot 0 swings right toward slot 1
-      var target = sgn === 0 ? 0 : -sgn * dir * amp;
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  roundRect(-6.5, -38, 3.4, 74, 1.7); ctx.fill();
+
+  ctx.restore();
+
+  if (CFG.answers) sign(x + 20, y - 34, true, 8.5);
+}
+
+function drawItem(it) {
+  if (it.kind === 'rod') drawRod(it); else drawBall(it);
+}
+
+function drawThreads() {
+  const a = slots[0], b = slots[1];
+  const sgn = (a && b) ? interaction(a, b) : 0;
+  const amp = (a && b) ? strength(a, b) * 56 * CFG.swing : 0;
+
+  for (let i = 0; i < 2; i++) {
+    const it = slots[i];
+    if (!it) continue;
+    if (!it.held) {
+      const dir = i === 0 ? 1 : -1;          /* slot 0 leans toward slot 1 */
+      const target = sgn === 0 ? 0 : -sgn * dir * amp;
       it.swingV = (it.swingV + (target - it.swing) * 0.06) * 0.90;
       it.swing += it.swingV;
       it.x = SLOT_X[i] + it.swing;
-      it.y = PIVOT_Y + Math.sqrt(Math.max(1, THREAD * THREAD - it.swing * it.swing));
+      it.y = BAR_Y + Math.sqrt(Math.max(1, THREAD * THREAD - it.swing * it.swing));
       ctx.strokeStyle = '#b6bfc8'; ctx.lineWidth = 1.2;
-      ctx.beginPath(); ctx.moveTo(SLOT_X[i], PIVOT_Y); ctx.lineTo(it.x, it.y); ctx.stroke();
-    }
-    // empty hook markers
-    for (i = 0; i < 2; i++) {
-      if (slots[i]) continue;
-      ctx.strokeStyle = '#d5dee7'; ctx.lineWidth = 1.5;
-      ctx.setLineDash([5, 5]);
-      ctx.beginPath(); ctx.moveTo(SLOT_X[i], PIVOT_Y); ctx.lineTo(SLOT_X[i], PIVOT_Y + THREAD); ctx.stroke();
-      ctx.beginPath(); ctx.arc(SLOT_X[i], PIVOT_Y + THREAD, 26, 0, Math.PI * 2); ctx.stroke();
-      ctx.setLineDash([]);
-    }
-
-    for (i = 0; i < items.length; i++) {
-      var t = items[i];
-      if (t.kind === 'rod') drawRod(t, t.x, t.y); else drawBall(t, t.x, t.y);
+      ctx.beginPath();
+      ctx.moveTo(SLOT_X[i], BAR_Y + 9); ctx.lineTo(it.x, it.y); ctx.stroke();
     }
   }
 
-  function frame() { draw(); requestAnimationFrame(frame); }
-  renderLog();
-  frame();
+  /* where a free hook is waiting */
+  for (let i = 0; i < 2; i++) {
+    if (slots[i]) continue;
+    const hot = drag && drag.o && drag.o.kind !== undefined;
+    ctx.strokeStyle = hot ? '#b9c6d3' : '#dde4eb';
+    ctx.lineWidth = 1.5; ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    ctx.moveTo(SLOT_X[i], BAR_Y + 9); ctx.lineTo(SLOT_X[i], BAR_Y + THREAD); ctx.stroke();
+    ctx.beginPath(); ctx.arc(SLOT_X[i], BAR_Y + THREAD, 26, 0, 7); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
+function caption(text, x, y, hot) {
+  ctx.font = 'bold 13px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = hot ? '#4a4a4a' : '#8d959c';
+  ctx.fillText(text, x, y);
+  ctx.textAlign = 'left';
+}
+
+function drawVerdict() {
+  const a = slots[0], b = slots[1];
+  const mid = (SLOT_X[0] + SLOT_X[1]) / 2;
+  if (!a || !b) {
+    if (CFG.labels) caption('hang two of them on the hooks', mid, 400, false);
+    return;
+  }
+  const text = a.label + ' and ' + b.label + ' ' + verdict(interaction(a, b));
+  ctx.font = 'bold 17px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+  ctx.strokeText(text, mid, 400);
+  ctx.fillStyle = '#1F3864';
+  ctx.fillText(text, mid, 400);
+  ctx.textAlign = 'left';
+}
+
+function drawRecord() {
+  if (!CFG.record || !record.length) return;
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.font = 'bold 12px Arial';
+  ctx.fillStyle = '#b2b9c0';
+  ctx.fillText('WHAT YOU HAVE SEEN SO FAR', 36, 66);
+  ctx.font = '13px Arial';
+  ctx.fillStyle = '#7d858c';
+  for (let i = 0; i < record.length; i++) ctx.fillText(record[i], 36, 90 + i * 19);
+}
+
+function drawResetIcon() {
+  if (!CFG.resetbtn) return;
+  const hot = hover === 'reset';
+  ctx.save();
+  ctx.translate(RESET_X, RESET_Y);
+  const a0 = -0.35 * Math.PI, a1 = 1.25 * Math.PI, R = 15;
+  ctx.strokeStyle = hot ? '#4a4a4a' : '#a8b0b6';
+  ctx.lineWidth = 3.4; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.arc(0, 0, R, a0, a1); ctx.stroke();
+
+  const tx = R * Math.cos(a1), ty = R * Math.sin(a1);
+  const th = Math.atan2(Math.cos(a1), -Math.sin(a1));
+  ctx.beginPath();
+  ctx.moveTo(tx + Math.cos(th + Math.PI - 0.5) * 10, ty + Math.sin(th + Math.PI - 0.5) * 10);
+  ctx.lineTo(tx, ty);
+  ctx.lineTo(tx + Math.cos(th + Math.PI + 0.5) * 10, ty + Math.sin(th + Math.PI + 0.5) * 10);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  drawFloor();
+  drawBar();
+  drawThreads();
+  for (const it of items) drawItem(it);
+  drawVerdict();
+  drawRecord();
+
+  if (CFG.labels) {
+    const rod = items.find(it => it.kind === 'rod');
+    if (rod && rod.slot < 0 && !rod.held)
+      caption('rubbed with wool, so it is positive', rod.x, FLOOR + 22, false);
+  }
+  drawResetIcon();
+}
+
+/* ─── pointer ──────────────────────────────────────────────────── */
+function toLogical(e) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - r.left) * DESIGN_W / r.width,
+    y: (e.clientY - r.top)  * DESIGN_H / r.height
+  };
+}
+
+function hitTest(x, y) {
+  if (CFG.resetbtn && Math.hypot(x - RESET_X, y - RESET_Y) < RESET_R + 6)
+    return { type: 'reset' };
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i], rr = radius(it) + 10;
+    if (Math.hypot(x - it.x, y - it.y) < rr) return { type: 'item', o: it };
+  }
+  return null;
+}
+
+function down(x, y) {
+  const h = hitTest(x, y);
+  if (!h) { drag = null; return; }
+  if (h.type === 'reset') { reset(); return; }
+  const it = h.o;
+  it.held = true;
+  if (it.slot >= 0) { slots[it.slot] = null; it.slot = -1; }
+  drag = { o: it, ox: it.x - x, oy: it.y - y };
+  canvas.style.cursor = 'grabbing';
+}
+
+function move(x, y) {
+  if (!drag) {
+    const h = hitTest(x, y);
+    hover = h ? h.type : null;
+    canvas.style.cursor = !h ? 'default' : (h.type === 'reset') ? 'pointer' : 'grab';
+    return;
+  }
+  drag.o.x = x + drag.ox;
+  drag.o.y = y + drag.oy;
+}
+
+function up() {
+  if (!drag) return;
+  const it = drag.o;
+  it.held = false;
+  drag = null;
+  canvas.style.cursor = 'default';
+
+  /* snap onto the nearer free hook if it was let go anywhere near one */
+  let best = -1, bestD = 150 * 150;
+  for (let s = 0; s < 2; s++) {
+    if (slots[s]) continue;
+    const dx = it.x - SLOT_X[s], dy = it.y - (BAR_Y + THREAD);
+    const d = dx * dx + dy * dy;
+    if (d < bestD) { bestD = d; best = s; }
+  }
+  if (best >= 0) {
+    slots[best] = it; it.slot = best; it.swing = 0; it.swingV = 0;
+    announce();
+  } else {
+    it.x = it.homeX; it.y = it.homeY;
+  }
+}
+
+canvas.addEventListener('mousedown', e => { const p = toLogical(e); down(p.x, p.y); });
+window.addEventListener('mousemove', e => { const p = toLogical(e); move(p.x, p.y); });
+window.addEventListener('mouseup', up);
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault(); const p = toLogical(e.touches[0]); down(p.x, p.y);
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault(); const p = toLogical(e.touches[0]); move(p.x, p.y);
+}, { passive: false });
+canvas.addEventListener('touchend', e => { e.preventDefault(); up(); }, { passive: false });
+canvas.addEventListener('touchcancel', e => { e.preventDefault(); up(); }, { passive: false });
+
+/* ─── run ──────────────────────────────────────────────────────── */
+reset();
+new ResizeObserver(fit).observe(canvas);
+fit();
+
+function loop() { draw(); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+
+})();
+</script>
+
+<!-- CHEAT PANEL — visible only when ?cheat=1 is in the URL -->
+<script>
+(function () {
+  var _cpQ = new URLSearchParams(location.search);
+  if (_cpQ.get('cheat') !== '1') return;
+
+  // ── CONFIGURE: one entry per exposed URL param ──────────────────────────
+  var CHEAT_DEFS = [
+    {name:'answers',  type:'toggle',                              default:0,   desc:'Give away the answer: mark each item + , - or neutral'},
+    {name:'record',   type:'toggle',                              default:1,   desc:'Keep the list of pairs you have tried'},
+    {name:'labels',   type:'toggle',                              default:1,   desc:'Show the captions'},
+    {name:'resetbtn', type:'toggle',                              default:1,   desc:'Show the start-over arrow'},
+    {name:'swing',    type:'number', min:0.2, max:3,   step:0.1,  default:1,   desc:'How far the threads swing'}
+  ];
+  var EMBED_KEYS = ['cheat']; // keys stripped from the embeddable URL
+  // ────────────────────────────────────────────────────────────────────────
+
+  function buildCleanUrl(ov) {
+    var p = new URLSearchParams(location.search);
+    EMBED_KEYS.forEach(function(k) { p.delete(k); });
+    for (var k in ov) { var v=ov[k]; if(v===null||v==='') p.delete(k); else p.set(k,v); }
+    var qs = p.toString();
+    return location.origin + location.pathname + (qs ? '?' + qs : '');
+  }
+  function buildCheatUrl(ov) {
+    var b = buildCleanUrl(ov);
+    return b + (b.indexOf('?') >= 0 ? '&' : '?') + 'cheat=1';
+  }
+  function getEff(d) { var r=_cpQ.get(d.name); return r===null ? String(d.default??'') : r; }
+  function isTruthy(v) { return v!=='0'&&v!=='false'&&v!=='no'&&v!=='off'&&v!==''; }
+
+  function makeControl(d) {
+    var eff = getEff(d);
+    if (d.type === 'toggle') {
+      var on = isTruthy(eff), btn = document.createElement('button');
+      btn.textContent = on ? '1 (on)' : '0 (off)';
+      btn.style.cssText = 'background:'+(on?'#1b3d1b':'#3d1b1b')+';color:'+(on?'#6dca80':'#e07070')+
+        ';border:1px solid '+(on?'#2a7a3a':'#8a2a2a')+';border-radius:3px;padding:3px 10px;'+
+        'cursor:pointer;font-size:12px;min-width:70px';
+      btn.onclick = function() { var u={}; u[d.name]=on?'0':'1'; location.href=buildCheatUrl(u); };
+      return btn;
+    }
+    if (d.type === 'select') {
+      var sel = document.createElement('select');
+      sel.style.cssText = 'background:#0d1b2a;color:#c8d8e8;border:1px solid #2a3f5f;'+
+        'border-radius:3px;padding:3px 8px;font-size:12px;cursor:pointer';
+      d.values.forEach(function(v) {
+        var o = document.createElement('option'); o.value=v; o.textContent=v;
+        if (eff===String(v)) o.selected=true; sel.appendChild(o);
+      });
+      sel.onchange = function() { var u={}; u[d.name]=sel.value; location.href=buildCheatUrl(u); };
+      return sel;
+    }
+    var inp = document.createElement('input');
+    inp.type = d.type==='number' ? 'number' : 'text'; inp.value = eff;
+    if (d.min!==undefined) inp.min=String(d.min);
+    if (d.max!==undefined) inp.max=String(d.max);
+    if (d.step!==undefined) inp.step=String(d.step);
+    inp.style.cssText = 'background:#0d1b2a;color:#c8d8e8;border:1px solid #2a3f5f;'+
+      'border-radius:3px;padding:3px 6px;width:'+(d.type==='number'?'90':'220')+'px;font-size:12px';
+    inp.onchange = function() { var u={}; u[d.name]=inp.value; location.href=buildCheatUrl(u); };
+    return inp;
+  }
+
+  function typeLabel(d) {
+    if (d.type==='toggle') return '0|1';
+    if (d.type==='select') return d.values.join('|');
+    if (d.type==='number'&&d.min!==undefined&&d.max!==undefined) return d.min+'–'+d.max;
+    return d.type;
+  }
+
+  function render() {
+    var panel = document.createElement('div');
+    panel.style.cssText = 'position:fixed;bottom:0;left:0;right:0;'+
+      'background:rgba(12,18,32,0.97);color:#c8d8e8;'+
+      'font-family:"Segoe UI",system-ui,monospace;font-size:13px;'+
+      'border-top:2px solid #3a7bd5;z-index:2147483647;max-height:48vh;overflow-y:auto;'+
+      'padding:10px 16px 14px;box-sizing:border-box;box-shadow:0 -4px 24px rgba(0,0,0,0.6)';
+
+    var hdr = document.createElement('div');
+    hdr.style.cssText = 'font-weight:bold;color:#7ab8f5;margin-bottom:8px;'+
+      'display:flex;align-items:center;justify-content:space-between';
+    var hspan = document.createElement('span');
+    hspan.textContent = '🔑 Cheat Panel — ' + location.pathname.split('/').pop();
+    var xbtn = document.createElement('button');
+    xbtn.textContent = '×'; xbtn.title = 'Close (reload to restore)';
+    xbtn.style.cssText = 'background:none;border:none;color:#7ab8f5;font-size:18px;'+
+      'cursor:pointer;padding:0 4px;line-height:1';
+    xbtn.onclick = function() { panel.remove(); };
+    hdr.appendChild(hspan); hdr.appendChild(xbtn); panel.appendChild(hdr);
+
+    var tbl = document.createElement('table');
+    tbl.style.cssText = 'border-collapse:collapse;width:100%;margin-bottom:10px';
+    var hrow = tbl.createTHead().insertRow();
+    ['Parameter','Type/Values','Control','Description'].forEach(function(h) {
+      var th = document.createElement('th');
+      th.textContent = h;
+      th.style.cssText = 'text-align:left;padding:4px 10px;border-bottom:1px solid #1e3050;'+
+        'color:#5a8fc0;font-size:11px;text-transform:uppercase;letter-spacing:.06em;white-space:nowrap';
+      hrow.appendChild(th);
+    });
+    var tbody = tbl.createTBody();
+    CHEAT_DEFS.forEach(function(d) {
+      var row = tbody.insertRow(), isSet = _cpQ.has(d.name);
+      row.style.cssText = 'border-bottom:1px solid #131f30;'+
+        (isSet ? 'background:rgba(58,123,213,0.08)' : '');
+      var nc = row.insertCell();
+      nc.style.cssText = 'padding:5px 10px;font-weight:bold;font-size:12px;'+
+        'color:'+(isSet?'#a8d4ff':'#7fa8d0')+';white-space:nowrap;font-family:monospace';
+      nc.textContent = d.name;
+      var tc = row.insertCell();
+      tc.style.cssText = 'padding:5px 10px;color:#5a7a90;font-size:11px;font-family:monospace';
+      tc.textContent = typeLabel(d);
+      var cc = row.insertCell();
+      cc.style.cssText = 'padding:4px 10px;white-space:nowrap';
+      cc.appendChild(makeControl(d));
+      var dc = row.insertCell();
+      dc.style.cssText = 'padding:5px 10px;color:#8aa0b0;font-size:12px';
+      dc.textContent = (d.desc||'')+(d.default!==undefined?' (default: '+d.default+')':'');
+    });
+    panel.appendChild(tbl);
+
+    var urlBox = document.createElement('div');
+    urlBox.style.cssText = 'background:#080d1a;border:1px solid #1e3050;border-radius:4px;'+
+      'padding:7px 12px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap';
+    var ulbl = document.createElement('span');
+    ulbl.style.cssText = 'color:#5a8fc0;font-size:11px;text-transform:uppercase;'+
+      'letter-spacing:.06em;white-space:nowrap;flex-shrink:0';
+    ulbl.textContent = 'Embed URL:';
+    var ulink = document.createElement('a');
+    ulink.style.cssText = 'color:#5fba7d;word-break:break-all;font-size:12px;'+
+      'font-family:monospace;text-decoration:none';
+    ulink.href = buildCleanUrl({}); ulink.textContent = buildCleanUrl({});
+    ulink.onclick = function(e) { e.preventDefault(); location.href=buildCheatUrl({}); };
+    var cpybtn = document.createElement('button');
+    cpybtn.textContent = 'copy';
+    cpybtn.style.cssText = 'background:#1a3050;color:#7ab8f5;border:1px solid #2a4a70;'+
+      'border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;'+
+      'white-space:nowrap;flex-shrink:0;margin-left:4px';
+    cpybtn.onclick = function() {
+      navigator.clipboard && navigator.clipboard.writeText(buildCleanUrl({}));
+      cpybtn.textContent = '✓ copied';
+      setTimeout(function() { cpybtn.textContent = 'copy'; }, 1500);
+    };
+    urlBox.appendChild(ulbl); urlBox.appendChild(ulink); urlBox.appendChild(cpybtn);
+    panel.appendChild(urlBox);
+    document.body.appendChild(panel);
+  }
+  render();
 })();
 </script>
 </body>

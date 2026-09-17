@@ -5,34 +5,882 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="eigennode-aspect" content="3/2">
 <title>Rubbing Plastics Together</title>
-<link rel="stylesheet" href="shared/sim.css">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    background: #ffffff;
+    font-family: Arial, sans-serif;
+    user-select: none; -webkit-user-select: none;
+    touch-action: none;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
 </head>
 <body>
+<canvas id="c"></canvas>
 
-<p id="hint">Click two of the plastics to choose them, rub them together, then drag them near each other and watch what they do.</p>
-
-<div id="cwrap"><div id="stage"><canvas id="canvas"></canvas></div></div>
-
-<div id="controls">
-  <div class="row">
-    <button id="rub" disabled>Rub two plastics together</button>
-    <button id="clear">Take all the charge away</button>
-    <button id="reset">Start over</button>
-  </div>
-  <div class="row"><span class="note" id="status">Click two of the plastics to choose them.</span></div>
-</div>
-
-<script src="shared/charges.js"></script>
-<script src="shared/plastics-scene.js"></script>
 <script>
-buildPlasticsScene({
-  canvas: document.getElementById('canvas'),
-  withStick: false,
-  rubBtn: document.getElementById('rub'),
-  clearBtn: document.getElementById('clear'),
-  resetBtn: document.getElementById('reset'),
-  status: document.getElementById('status')
-});
+(function () {
+'use strict';
+
+/* ─── whether this file puts a Fun Fly Stick on the bench ────── */
+/* The stick is the one thing here whose charge we already know the sign
+   of, so with it you can pin down which plastic is which. Everything
+   below this line is the same in rub_plastics.html and
+   add_stick_plastic.html, so a diff between the two shows only the title
+   and this constant. */
+const DEFAULT_STICK = false;
+
+/* ─── query params ─────────────────────────────────────────────── */
+const Q    = new URLSearchParams(location.search);
+const num  = (k, d) => Q.has(k) && isFinite(+Q.get(k)) ? +Q.get(k) : d;
+const bool = (k, d) => Q.has(k) ? Q.get(k) !== '0' : d;
+
+window.SIM_DEFAULT_STICK = DEFAULT_STICK;   /* the cheat panel reads this */
+
+const CFG = {
+  stick:    bool('stick', DEFAULT_STICK),
+  power:    bool('power', false),
+  sponge:   bool('sponge', true),
+  labels:   bool('labels', true),
+  /* off by default: working out the signs without being told is the
+     whole point of these two sims */
+  signs:    bool('signs', false),
+  sparks:   bool('sparks', true),
+  resetbtn: bool('resetbtn', true),
+  rublen:   Math.max(20, num('rublen', 210)),
+  strength: Math.max(0.05, num('strength', 1))
+};
+
+/* ─── canvas ───────────────────────────────────────────────────── */
+const DESIGN_W = 900, DESIGN_H = 600;
+const W = DESIGN_W, H = DESIGN_H;
+const FLOOR = 520;
+const RESET_X = 856, RESET_Y = 558, RESET_R = 16;
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+function fit() {
+  const dpr = window.devicePixelRatio || 1;
+  const cw = canvas.clientWidth, ch = canvas.clientHeight;
+  if (!cw || !ch) return;
+  canvas.width  = Math.round(cw * dpr);
+  canvas.height = Math.round(ch * dpr);
+  ctx.setTransform(canvas.width / DESIGN_W, 0, 0, canvas.height / DESIGN_H, 0, 0);
+  draw();
+}
+
+/* ─── the wand, measured down from its charging tip ────────────── */
+const HW       = 9;     /* half-width of the tube */
+const PALE_END = 64;    /* pale printed section with the logo */
+const GUARD_0  = 92, GUARD_1 = 118;
+const BTN_Y    = 128;   /* red power button */
+const OR1_0    = 136, OR1_1 = 144;
+const TEAL_1   = 200;
+const OR2_1    = 208;
+const CAP_0    = 204, CAP_1 = 240, CAP_HW = 11.5;
+const WAND_LEN = 240;
+
+const STICK_Y_MAX = FLOOR + 10;
+const BTN_Y_MAX   = H - 22;
+
+/* ─── the plastics ─────────────────────────────────────────────── */
+const SLAB_W = 96, SLAB_H = 64, SLAB_R = 46;
+
+/* Where each plastic sits on the triboelectric series. Rub two of them
+   together and the one lower on the list comes away negative. */
+const SERIES = { PVC: 0, PET: 1, PA: 2 };
+const KINDS = [
+  { id: 'PVC', x: 250, y: 250, color: '#7fb069' },
+  { id: 'PET', x: 430, y: 250, color: '#e0a458' },
+  { id: 'PA',  x: 610, y: 250, color: '#8e7cc3' }
+];
+
+/* ─── physics constants ────────────────────────────────────────── */
+/* Two charged slabs push or pull on each other by 1/r^2. A charged slab
+   pulls a neutral one in by 1/r^3, which is weaker and dies off faster. */
+const KQQ   = 9.0e6 * CFG.strength;
+const KIND  = 2.6e8 * CFG.strength;
+const A_MAX = 2400;
+const STICK_Q = -1.6;
+
+/* ─── state ────────────────────────────────────────────────────── */
+let slabs, stick, sponge, sparks, rub, rubbed, hover, drag, prev;
+
+function reset() {
+  slabs = KINDS.map(k => ({
+    kind: 'slab', id: k.id, color: k.color,
+    x: k.x, y: k.y, vx: 0, vy: 0, q: 0, r: SLAB_R,
+    hx: SLAB_W / 2 + 4, hy: SLAB_H / 2 + 4, held: false
+  }));
+  stick = { x: 790, y: 140, on: CFG.power };
+  sponge = { x: 132, y: FLOOR - 26 };
+  sparks = [];
+  rub = null;
+  rubbed = false;
+  drag = null; hover = null;
+}
+
+/* ─── helpers ──────────────────────────────────────────────────── */
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+/* the red button rides on the wand, but never leaves the screen */
+function btnPos() {
+  return { x: stick.x, y: Math.min(stick.y + BTN_Y, BTN_Y_MAX) };
+}
+
+function stickCharge() {
+  return (CFG.stick && stick.on) ? STICK_Q : 0;
+}
+
+function addSpark(x, y, n) {
+  if (!CFG.sparks) return;
+  const segs = [];
+  for (let i = 0; i < (n || 3); i++) {
+    const a = Math.random() * Math.PI * 2, len = 9 + Math.random() * 14;
+    const pts = [[0, 0]];
+    let cx = 0, cy = 0;
+    for (let k = 0; k < 3; k++) {
+      cx += Math.cos(a) * len / 3 + (Math.random() - 0.5) * 6;
+      cy += Math.sin(a) * len / 3 + (Math.random() - 0.5) * 6;
+      pts.push([cx, cy]);
+    }
+    segs.push(pts);
+  }
+  sparks.push({ x: x, y: y, segs: segs, life: 0.24, t: 0.24 });
+}
+
+/* two slabs count as touching once they overlap, which is when you can
+   scrub one across the other */
+function overlapping(a, b) {
+  return Math.abs(a.x - b.x) < SLAB_W * 0.92 &&
+         Math.abs(a.y - b.y) < SLAB_H * 0.92;
+}
+
+function otherSlabUnder(o) {
+  for (const s of slabs) if (s !== o && overlapping(o, s)) return s;
+  return null;
+}
+
+/* Rubbing moves charge from one plastic to the other, so they come away
+   with equal and opposite charge. */
+function doRub(a, b) {
+  const lower = SERIES[a.id] < SERIES[b.id] ? a : b;
+  const upper = lower === a ? b : a;
+  lower.q = -1; upper.q = 1;
+  rubbed = true;
+  const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+  addSpark(mx, my, 4);
+  /* push them apart a little so you can see them react right away */
+  let dx = upper.x - lower.x, dy = upper.y - lower.y;
+  const d = Math.hypot(dx, dy) || 1;
+  lower.x -= dx / d * 14; lower.y -= dy / d * 14;
+  upper.x += dx / d * 14; upper.y += dy / d * 14;
+}
+
+/* ─── physics ──────────────────────────────────────────────────── */
+function step(dt) {
+  const sq = stickCharge();
+
+  for (const a of slabs) {
+    if (a.held) { a.vx = 0; a.vy = 0; continue; }
+    let ax = 0, ay = 0;
+    const others = slabs.filter(s => s !== a);
+    if (sq) others.push({ x: stick.x, y: stick.y, q: sq, r: 24 });
+    for (const b of others) {
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const r = Math.max(Math.hypot(dx, dy), a.r + b.r) || 1;
+      let mag;
+      if (a.q && b.q) {
+        /* like charges push apart, opposite ones pull together */
+        mag = -KQQ * a.q * b.q / (r * r);
+      } else if (a.q || b.q) {
+        const q = a.q || b.q;
+        mag = KIND * q * q / (r * r * r);
+      } else continue;
+      mag = Math.max(-A_MAX, Math.min(A_MAX, mag));
+      ax += mag * dx / r; ay += mag * dy / r;
+    }
+    /* the air holds these back a lot: they slide rather than fly */
+    ax -= a.vx * 2.4; ay -= a.vy * 2.4;
+    a.vx += ax * dt; a.vy += ay * dt;
+    a.x += a.vx * dt; a.y += a.vy * dt;
+
+    if (a.x < a.hx) { a.x = a.hx; a.vx *= -0.4; }
+    if (a.x > W - a.hx) { a.x = W - a.hx; a.vx *= -0.4; }
+    if (a.y < a.hy) { a.y = a.hy; a.vy *= -0.4; }
+    if (a.y > FLOOR - a.hy - 4) { a.y = FLOOR - a.hy - 4; a.vy *= -0.4; }
+  }
+
+  /* Nothing passes through anything, except while you are scrubbing one
+     slab across another. Plastics are insulators, so touching alone never
+     moves any charge. */
+  for (let i = 0; i < slabs.length; i++) {
+    for (let j = i + 1; j < slabs.length; j++) {
+      const a = slabs[i], b = slabs[j];
+      if (a.held || b.held) continue;
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const d = Math.hypot(dx, dy) || 1e-6;
+      const touch = a.r + b.r;
+      if (d >= touch) continue;
+      const ux = dx / d, uy = dy / d, push = touch - d;
+      a.x -= ux * push / 2; a.y -= uy * push / 2;
+      b.x += ux * push / 2; b.y += uy * push / 2;
+      const rel = (b.vx - a.vx) * ux + (b.vy - a.vy) * uy;
+      if (rel < 0) {
+        a.vx += ux * rel / 2; a.vy += uy * rel / 2;
+        b.vx -= ux * rel / 2; b.vy -= uy * rel / 2;
+      }
+    }
+  }
+
+  /* Water conducts, so a damp sponge wiped over a plastic carries the
+     charge off it. Nothing else here can. */
+  if (CFG.sponge) {
+    for (const s of slabs) {
+      if (!s.q) continue;
+      if (Math.abs(sponge.x - s.x) < SLAB_W / 2 + 26 &&
+          Math.abs(sponge.y - s.y) < SLAB_H / 2 + 20) {
+        s.q = 0;
+        addSpark(sponge.x, sponge.y, 2);
+      }
+    }
+  }
+
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    sparks[i].life -= dt;
+    if (sparks[i].life <= 0) sparks.splice(i, 1);
+  }
+}
+
+/* ─── drawing ──────────────────────────────────────────────────── */
+function drawFloor() {
+  const g = ctx.createLinearGradient(0, FLOOR, 0, FLOOR + 26);
+  g.addColorStop(0, 'rgba(0,0,0,0.055)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, FLOOR, W, 26);
+  ctx.strokeStyle = '#cfcfcf'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0, FLOOR); ctx.lineTo(W, FLOOR); ctx.stroke();
+}
+
+function drawStick() {
+  if (!CFG.stick) return;
+  const sq = stickCharge();
+  const x = stick.x, y = stick.y;
+
+  if (sq) {
+    const g = ctx.createRadialGradient(x, y, 0, x, y, 78);
+    g.addColorStop(0, 'rgba(90,160,255,0.30)');
+    g.addColorStop(1, 'rgba(90,160,255,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(x, y, 78, 0, 7); ctx.fill();
+  }
+
+  ctx.save();
+  ctx.translate(x, y);
+
+  /* soft shadow under the wand */
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.10)';
+  roundRect(-HW + 3, 3, HW * 2, WAND_LEN, HW); ctx.fill();
+  ctx.restore();
+
+  /* ── the painted tube ── */
+  ctx.save();
+  roundRect(-HW, 0, HW * 2, WAND_LEN, HW);
+  ctx.clip();
+
+  /* pale printed nose with the logo */
+  ctx.fillStyle = '#ddf0fb'; ctx.fillRect(-HW, 0, HW * 2, PALE_END);
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  for (let i = 0; i < 5; i++) {
+    ctx.beginPath();
+    ctx.ellipse(-4 + (i % 2) * 8, 10 + i * 12, 5, 3.4, 0.5, 0, 7);
+    ctx.fill();
+  }
+  ctx.fillStyle = 'rgba(120,190,225,0.5)';
+  ctx.beginPath(); ctx.ellipse(0, 6, 7, 5, 0, 0, 7); ctx.fill();
+
+  /* plain blue shaft */
+  ctx.fillStyle = '#1f93c8'; ctx.fillRect(-HW, PALE_END, HW * 2, OR1_0 - PALE_END);
+  /* orange collar */
+  ctx.fillStyle = '#f2a01e'; ctx.fillRect(-HW, OR1_0, HW * 2, OR1_1 - OR1_0);
+  /* striped teal grip */
+  ctx.fillStyle = '#2fb2cf'; ctx.fillRect(-HW, OR1_1, HW * 2, TEAL_1 - OR1_1);
+  ctx.fillStyle = '#2596b3';
+  for (let s = OR1_1 + 3; s < TEAL_1; s += 13) ctx.fillRect(-HW, s, HW * 2, 6);
+  /* second orange collar */
+  ctx.fillStyle = '#f2a01e'; ctx.fillRect(-HW, TEAL_1, HW * 2, OR2_1 - TEAL_1);
+  /* butt end */
+  ctx.fillStyle = '#1b6fa8'; ctx.fillRect(-HW, OR2_1, HW * 2, WAND_LEN - OR2_1);
+
+  /* yellow squiggles on the grip */
+  ctx.strokeStyle = '#ffd84d'; ctx.lineWidth = 2.2; ctx.lineCap = 'round';
+  for (let i = 0; i < 3; i++) {
+    const t = OR1_1 + 10 + i * 18;
+    ctx.beginPath();
+    ctx.moveTo(-6, t);
+    ctx.bezierCurveTo(2, t + 3, -3, t + 8, 6, t + 10);
+    ctx.stroke();
+  }
+
+  /* logo down the nose */
+  ctx.save();
+  ctx.translate(0, 36); ctx.rotate(-Math.PI / 2);
+  ctx.font = 'bold italic 13px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineWidth = 3; ctx.strokeStyle = '#ffffff';
+  ctx.strokeText('Fly-Stick', 0, 0);
+  ctx.fillStyle = '#f2a01e';
+  ctx.fillText('Fly-Stick', 0, 0);
+  ctx.restore();
+
+  /* gloss */
+  ctx.fillStyle = 'rgba(255,255,255,0.32)';
+  roundRect(-HW + 2, 4, 3.6, WAND_LEN - 10, 1.8); ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,0.13)';
+  roundRect(HW - 4.5, 4, 3.2, WAND_LEN - 10, 1.6); ctx.fill();
+  ctx.restore();
+
+  ctx.strokeStyle = 'rgba(20,60,90,0.35)'; ctx.lineWidth = 1.3;
+  roundRect(-HW, 0, HW * 2, WAND_LEN, HW); ctx.stroke();
+
+  /* ── ribbed collar and the little flag, both stand proud of the tube ── */
+  ctx.fillStyle = '#1f93c8';
+  ctx.strokeStyle = 'rgba(20,60,90,0.35)'; ctx.lineWidth = 1.3;
+  roundRect(-HW - 14, GUARD_0 - 2, 16, 26, 4); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.22)';
+  roundRect(-HW - 11, GUARD_0 + 1, 4, 19, 2); ctx.fill();
+  for (let i = 0; i < 4; i++) {
+    ctx.fillStyle = '#1a7fb0';
+    roundRect(-HW - 2.5, GUARD_0 + i * 6.5, (HW + 2.5) * 2, 4.4, 2.2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(20,60,90,0.3)'; ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  /* ── rounded butt cap ── */
+  ctx.fillStyle = '#1b6fa8';
+  roundRect(-CAP_HW, CAP_0, CAP_HW * 2, CAP_1 - CAP_0, CAP_HW);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(20,60,90,0.4)'; ctx.lineWidth = 1.3; ctx.stroke();
+  for (let i = 0; i < 3; i++) {
+    ctx.fillStyle = '#14577f';
+    roundRect(-CAP_HW, CAP_0 + 3 + i * 6, CAP_HW * 2, 3.4, 1.7); ctx.fill();
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.25)';
+  roundRect(-CAP_HW + 2.5, CAP_0 + 3, 3.4, 26, 1.7); ctx.fill();
+
+  ctx.restore();
+
+  /* the one charge on the bench whose sign we already know */
+  if (sq) {
+    for (let i = 0; i < 5; i++) {
+      const a = -Math.PI + i * Math.PI / 4;
+      sign(x + Math.cos(a) * 30, y + Math.sin(a) * 26, false, 4.6);
+    }
+  }
+
+  drawPowerButton();
+}
+
+function drawPowerButton() {
+  const b = btnPos();
+  const bx = b.x, by = b.y;
+  const on = stick.on;
+  const hot = hover === 'power';
+
+  if (on) {
+    const g = ctx.createRadialGradient(bx, by, 2, bx, by, 20);
+    g.addColorStop(0, 'rgba(255,60,40,0.45)');
+    g.addColorStop(1, 'rgba(255,60,40,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(bx, by, 20, 0, 7); ctx.fill();
+  }
+  ctx.beginPath(); ctx.arc(bx, by, hot ? 9 : 8.2, 0, 7);
+  ctx.fillStyle = '#12506f'; ctx.fill();
+  ctx.beginPath(); ctx.arc(bx, by, 6, 0, 7);
+  ctx.fillStyle = on ? '#ff3b26' : '#b03226'; ctx.fill();
+  ctx.beginPath(); ctx.arc(bx - 1.6, by - 1.8, 2.1, 0, 7);
+  ctx.fillStyle = on ? 'rgba(255,220,210,0.95)' : 'rgba(255,255,255,0.35)'; ctx.fill();
+}
+
+const RED = '#d94141', BLUE = '#3466c4';
+
+function sign(x, y, positive, s) {
+  ctx.beginPath(); ctx.arc(x, y, s, 0, 7);
+  ctx.fillStyle = positive ? BLUE : RED; ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+  ctx.lineWidth = Math.max(1.2, s * 0.36); ctx.lineCap = 'butt';
+  ctx.beginPath();
+  ctx.moveTo(x - s * 0.52, y); ctx.lineTo(x + s * 0.52, y);
+  if (positive) { ctx.moveTo(x, y - s * 0.52); ctx.lineTo(x, y + s * 0.52); }
+  ctx.stroke();
+}
+
+/* a slab of plastic, with its name stamped on it */
+function drawSlab(b) {
+  ctx.save();
+  ctx.translate(b.x, b.y);
+
+  ctx.fillStyle = 'rgba(0,0,0,0.10)';
+  roundRect(-SLAB_W / 2 + 3, -SLAB_H / 2 + 4, SLAB_W, SLAB_H, 9); ctx.fill();
+
+  const g = ctx.createLinearGradient(0, -SLAB_H / 2, 0, SLAB_H / 2);
+  g.addColorStop(0, '#ffffff');
+  g.addColorStop(0.13, b.color);
+  g.addColorStop(1, b.color);
+  ctx.fillStyle = g;
+  ctx.strokeStyle = 'rgba(40,55,70,0.45)'; ctx.lineWidth = 1.5;
+  roundRect(-SLAB_W / 2, -SLAB_H / 2, SLAB_W, SLAB_H, 9);
+  ctx.fill(); ctx.stroke();
+
+  /* gloss along the top */
+  ctx.fillStyle = 'rgba(255,255,255,0.42)';
+  roundRect(-SLAB_W / 2 + 7, -SLAB_H / 2 + 6, SLAB_W - 14, 9, 4.5); ctx.fill();
+
+  ctx.fillStyle = '#26313d';
+  ctx.font = 'bold 22px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(b.id, 0, 3);
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+
+  if (CFG.signs && b.q) sign(SLAB_W / 2 - 13, -SLAB_H / 2 + 13, b.q > 0, 9);
+
+  ctx.restore();
+}
+
+/* short scuff lines while one slab is being scrubbed across another */
+function drawScuff() {
+  if (!rub) return;
+  const f = Math.min(1, rub.amt / CFG.rublen);
+  const mx = (rub.self.x + rub.pair.x) / 2, my = (rub.self.y + rub.pair.y) / 2;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(90,105,120,' + (0.25 + 0.6 * f).toFixed(2) + ')';
+  ctx.lineWidth = 2; ctx.lineCap = 'round';
+  for (let i = 0; i < 5; i++) {
+    const a = -0.5 + i * 0.25 + f * 1.4;
+    const r0 = 34 + f * 6, r1 = r0 + 9 + f * 9;
+    ctx.beginPath();
+    ctx.moveTo(mx + Math.cos(a) * r0, my + Math.sin(a) * r0);
+    ctx.lineTo(mx + Math.cos(a) * r1, my + Math.sin(a) * r1);
+    ctx.moveTo(mx - Math.cos(a) * r0, my - Math.sin(a) * r0);
+    ctx.lineTo(mx - Math.cos(a) * r1, my - Math.sin(a) * r1);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* A damp sponge. Wipe a plastic with it and the charge goes. */
+function drawSponge() {
+  if (!CFG.sponge) return;
+  const hot = hover === 'sponge';
+  const w = 78, h = 46;
+  ctx.save();
+  ctx.translate(sponge.x, sponge.y);
+
+  ctx.fillStyle = 'rgba(0,0,0,0.11)';
+  ctx.beginPath(); ctx.ellipse(3, h / 2 + 3, w / 2 - 2, 6, 0, 0, 7); ctx.fill();
+
+  /* the yellow block */
+  const g = ctx.createLinearGradient(0, -h / 2, 0, h / 2);
+  g.addColorStop(0, '#fbe79a');
+  g.addColorStop(1, '#e8c95c');
+  ctx.fillStyle = g;
+  ctx.strokeStyle = hot ? '#8f7a2c' : '#bfa445'; ctx.lineWidth = 1.5;
+  roundRect(-w / 2, -h / 2, w, h, 7);
+  ctx.fill(); ctx.stroke();
+
+  /* the green scrubbing side on top */
+  ctx.save();
+  roundRect(-w / 2, -h / 2, w, h, 7); ctx.clip();
+  const g2 = ctx.createLinearGradient(0, -h / 2, 0, -h / 2 + 17);
+  g2.addColorStop(0, '#6fa85e');
+  g2.addColorStop(1, '#4e8a45');
+  ctx.fillStyle = g2;
+  ctx.fillRect(-w / 2, -h / 2, w, 17);
+  ctx.restore();
+
+  /* pores */
+  ctx.fillStyle = 'rgba(160,135,55,0.35)';
+  let sd = 4133;
+  const rnd = () => (sd = (sd * 9301 + 49297) % 233280) / 233280;
+  for (let i = 0; i < 26; i++) {
+    const px = (rnd() - 0.5) * (w - 14);
+    const py = -h / 2 + 22 + rnd() * (h - 28);
+    ctx.beginPath(); ctx.ellipse(px, py, 1.4 + rnd() * 2.2, 1.1 + rnd() * 1.6, rnd(), 0, 7);
+    ctx.fill();
+  }
+
+  /* a wet sheen */
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  roundRect(-w / 2 + 7, -h / 2 + 20, w - 14, 4, 2); ctx.fill();
+
+  ctx.restore();
+
+  if (CFG.labels) caption('damp sponge', sponge.x, FLOOR + 22, hot);
+}
+
+function drawSparks() {
+  for (const s of sparks) {
+    const a = Math.max(0, s.life / s.t);
+    ctx.strokeStyle = 'rgba(47,128,237,' + (0.85 * a).toFixed(3) + ')';
+    ctx.lineWidth = 1.8; ctx.lineCap = 'round';
+    for (const pts of s.segs) {
+      ctx.beginPath();
+      ctx.moveTo(s.x + pts[0][0], s.y + pts[0][1]);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(s.x + pts[i][0], s.y + pts[i][1]);
+      ctx.stroke();
+    }
+  }
+}
+
+function drawResetIcon() {
+  if (!CFG.resetbtn) return;
+  const hot = hover === 'reset';
+  ctx.save();
+  ctx.translate(RESET_X, RESET_Y);
+  const a0 = -0.35 * Math.PI, a1 = 1.25 * Math.PI, R = 15;
+  ctx.strokeStyle = hot ? '#4a4a4a' : '#a8b0b6';
+  ctx.lineWidth = 3.4; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.arc(0, 0, R, a0, a1); ctx.stroke();
+
+  const tx = R * Math.cos(a1), ty = R * Math.sin(a1);
+  const th = Math.atan2(Math.cos(a1), -Math.sin(a1));
+  ctx.beginPath();
+  ctx.moveTo(tx + Math.cos(th + Math.PI - 0.5) * 10, ty + Math.sin(th + Math.PI - 0.5) * 10);
+  ctx.lineTo(tx, ty);
+  ctx.lineTo(tx + Math.cos(th + Math.PI + 0.5) * 10, ty + Math.sin(th + Math.PI + 0.5) * 10);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function caption(text, x, y, hot) {
+  ctx.font = 'bold 13px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = hot ? '#4a4a4a' : '#8d959c';
+  ctx.fillText(text, x, y);
+  ctx.textAlign = 'left';
+}
+
+function label(text, x, y) {
+  ctx.font = 'bold 14px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.lineWidth = 3.5; ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = '#555555';
+  ctx.fillText(text, x, y);
+  ctx.textAlign = 'left';
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  drawFloor();
+  drawStick();
+  drawScuff();
+  for (const s of slabs) drawSlab(s);
+  drawSponge();
+  drawSparks();
+
+  if (CFG.labels) {
+    caption(rubbed ? 'the damp sponge takes the charge back off'
+                   : 'drag one plastic across another to rub them',
+            W / 2, 52, false);
+    if (CFG.stick)
+      label('this charge is negative', stick.x, Math.min(H - 6, stick.y + WAND_LEN + 26));
+  }
+  drawResetIcon();
+}
+
+/* ─── pointer ──────────────────────────────────────────────────── */
+function toLogical(e) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - r.left) * DESIGN_W / r.width,
+    y: (e.clientY - r.top)  * DESIGN_H / r.height
+  };
+}
+
+function hitTest(x, y) {
+  if (CFG.resetbtn && Math.hypot(x - RESET_X, y - RESET_Y) < RESET_R + 6)
+    return { type: 'reset' };
+  if (CFG.stick) {
+    const b = btnPos();
+    if (Math.hypot(x - b.x, y - b.y) < 15) return { type: 'power' };
+  }
+  if (CFG.sponge && Math.abs(x - sponge.x) < 44 && Math.abs(y - sponge.y) < 28)
+    return { type: 'sponge' };
+  for (let i = slabs.length - 1; i >= 0; i--) {
+    const s = slabs[i];
+    if (Math.abs(x - s.x) < SLAB_W / 2 + 4 && Math.abs(y - s.y) < SLAB_H / 2 + 4)
+      return { type: 'slab', o: s };
+  }
+  if (CFG.stick && x > stick.x - 26 && x < stick.x + 20 &&
+      y > stick.y - 14 && y < stick.y + WAND_LEN + 6)
+    return { type: 'stick' };
+  return null;
+}
+
+function down(x, y) {
+  const h = hitTest(x, y);
+  if (!h) { drag = null; return; }
+  if (h.type === 'reset') { reset(); return; }
+  if (h.type === 'power') {
+    stick.on = !stick.on; addSpark(stick.x, stick.y, 2); return;
+  }
+  if (h.type === 'sponge') {
+    drag = { type: 'sponge', ox: sponge.x - x, oy: sponge.y - y };
+  } else if (h.type === 'stick') {
+    drag = { type: 'stick', ox: stick.x - x, oy: stick.y - y };
+  } else {
+    h.o.held = true;
+    drag = { type: 'slab', o: h.o, ox: h.o.x - x, oy: h.o.y - y };
+  }
+  prev = { x: x, y: y, t: performance.now() };
+  canvas.style.cursor = 'grabbing';
+}
+
+function move(x, y) {
+  if (!drag) {
+    const h = hitTest(x, y);
+    hover = h ? h.type : null;
+    canvas.style.cursor = !h ? 'default'
+      : (h.type === 'reset' || h.type === 'power') ? 'pointer' : 'grab';
+    return;
+  }
+  const nx = x + drag.ox, ny = y + drag.oy;
+
+  if (drag.type === 'stick') {
+    stick.x = Math.max(40, Math.min(W - 40, nx));
+    stick.y = Math.max(60, Math.min(STICK_Y_MAX, ny));
+    return;
+  }
+  if (drag.type === 'sponge') {
+    sponge.x = Math.max(50, Math.min(W - 50, nx));
+    sponge.y = Math.max(40, Math.min(H - 40, ny));
+    return;
+  }
+
+  const o = drag.o;
+  const now = performance.now();
+  const dt = Math.max(0.012, (now - prev.t) / 1000);
+  const moved = Math.hypot(nx - o.x, ny - o.y);
+  o.vx = Math.max(-1200, Math.min(1200, (nx - o.x) / dt * 0.5));
+  o.vy = Math.max(-1200, Math.min(1200, (ny - o.y) / dt * 0.5));
+  o.x = nx; o.y = ny;
+  prev = { x: x, y: y, t: now };
+
+  /* scrubbing one slab back and forth across another is what charges them */
+  const under = otherSlabUnder(o);
+  if (!under) { rub = null; return; }
+  if (!rub || rub.self !== o || rub.pair !== under) rub = { self: o, pair: under, amt: 0 };
+  rub.amt += moved;
+  if (rub.amt >= CFG.rublen) { doRub(o, under); rub = { self: o, pair: under, amt: 0 }; }
+}
+
+function up() {
+  if (drag && drag.o) drag.o.held = false;
+  drag = null; rub = null;
+  canvas.style.cursor = 'default';
+}
+
+canvas.addEventListener('mousedown', e => { const p = toLogical(e); down(p.x, p.y); });
+window.addEventListener('mousemove', e => { const p = toLogical(e); move(p.x, p.y); });
+window.addEventListener('mouseup', up);
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault(); const p = toLogical(e.touches[0]); down(p.x, p.y);
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault(); const p = toLogical(e.touches[0]); move(p.x, p.y);
+}, { passive: false });
+canvas.addEventListener('touchend', e => { e.preventDefault(); up(); }, { passive: false });
+canvas.addEventListener('touchcancel', e => { e.preventDefault(); up(); }, { passive: false });
+
+/* ─── run ──────────────────────────────────────────────────────── */
+reset();
+new ResizeObserver(fit).observe(canvas);
+fit();
+
+let last = 0;
+function loop(ts) {
+  if (!last) last = ts;
+  let dt = (ts - last) / 1000;
+  last = ts;
+  step(Math.min(dt, 1 / 30));
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+})();
+</script>
+
+<!-- CHEAT PANEL — visible only when ?cheat=1 is in the URL -->
+<script>
+(function () {
+  var _cpQ = new URLSearchParams(location.search);
+  if (_cpQ.get('cheat') !== '1') return;
+
+  // ── CONFIGURE: one entry per exposed URL param ──────────────────────────
+  var CHEAT_DEFS = [
+    {name:'stick',    type:'toggle', default:(window.SIM_DEFAULT_STICK?1:0),
+                                                             desc:'Put a Fun Fly Stick on the bench'},
+    {name:'power',    type:'toggle',                              default:0,   desc:'Stick starts switched on'},
+    {name:'signs',    type:'toggle',                              default:0,   desc:'Give away the answer: stamp + or - on a charged plastic'},
+    {name:'sponge',   type:'toggle',                              default:1,   desc:'Show the damp sponge that wipes the charge off'},
+    {name:'labels',   type:'toggle',                              default:1,   desc:'Show the captions'},
+    {name:'sparks',   type:'toggle',                              default:1,   desc:'Show sparks'},
+    {name:'resetbtn', type:'toggle',                              default:1,   desc:'Show the start-over arrow'},
+    {name:'rublen',   type:'number', min:40,  max:600, step:10,   default:210, desc:'How far you drag before the rubbing takes'},
+    {name:'strength', type:'number', min:0.2, max:3,   step:0.1,  default:1,   desc:'How strongly the plastics push and pull'}
+  ];
+  var EMBED_KEYS = ['cheat']; // keys stripped from the embeddable URL
+  // ────────────────────────────────────────────────────────────────────────
+
+  function buildCleanUrl(ov) {
+    var p = new URLSearchParams(location.search);
+    EMBED_KEYS.forEach(function(k) { p.delete(k); });
+    for (var k in ov) { var v=ov[k]; if(v===null||v==='') p.delete(k); else p.set(k,v); }
+    var qs = p.toString();
+    return location.origin + location.pathname + (qs ? '?' + qs : '');
+  }
+  function buildCheatUrl(ov) {
+    var b = buildCleanUrl(ov);
+    return b + (b.indexOf('?') >= 0 ? '&' : '?') + 'cheat=1';
+  }
+  function getEff(d) { var r=_cpQ.get(d.name); return r===null ? String(d.default??'') : r; }
+  function isTruthy(v) { return v!=='0'&&v!=='false'&&v!=='no'&&v!=='off'&&v!==''; }
+
+  function makeControl(d) {
+    var eff = getEff(d);
+    if (d.type === 'toggle') {
+      var on = isTruthy(eff), btn = document.createElement('button');
+      btn.textContent = on ? '1 (on)' : '0 (off)';
+      btn.style.cssText = 'background:'+(on?'#1b3d1b':'#3d1b1b')+';color:'+(on?'#6dca80':'#e07070')+
+        ';border:1px solid '+(on?'#2a7a3a':'#8a2a2a')+';border-radius:3px;padding:3px 10px;'+
+        'cursor:pointer;font-size:12px;min-width:70px';
+      btn.onclick = function() { var u={}; u[d.name]=on?'0':'1'; location.href=buildCheatUrl(u); };
+      return btn;
+    }
+    if (d.type === 'select') {
+      var sel = document.createElement('select');
+      sel.style.cssText = 'background:#0d1b2a;color:#c8d8e8;border:1px solid #2a3f5f;'+
+        'border-radius:3px;padding:3px 8px;font-size:12px;cursor:pointer';
+      d.values.forEach(function(v) {
+        var o = document.createElement('option'); o.value=v; o.textContent=v;
+        if (eff===String(v)) o.selected=true; sel.appendChild(o);
+      });
+      sel.onchange = function() { var u={}; u[d.name]=sel.value; location.href=buildCheatUrl(u); };
+      return sel;
+    }
+    var inp = document.createElement('input');
+    inp.type = d.type==='number' ? 'number' : 'text'; inp.value = eff;
+    if (d.min!==undefined) inp.min=String(d.min);
+    if (d.max!==undefined) inp.max=String(d.max);
+    if (d.step!==undefined) inp.step=String(d.step);
+    inp.style.cssText = 'background:#0d1b2a;color:#c8d8e8;border:1px solid #2a3f5f;'+
+      'border-radius:3px;padding:3px 6px;width:'+(d.type==='number'?'90':'220')+'px;font-size:12px';
+    inp.onchange = function() { var u={}; u[d.name]=inp.value; location.href=buildCheatUrl(u); };
+    return inp;
+  }
+
+  function typeLabel(d) {
+    if (d.type==='toggle') return '0|1';
+    if (d.type==='select') return d.values.join('|');
+    if (d.type==='number'&&d.min!==undefined&&d.max!==undefined) return d.min+'–'+d.max;
+    return d.type;
+  }
+
+  function render() {
+    var panel = document.createElement('div');
+    panel.style.cssText = 'position:fixed;bottom:0;left:0;right:0;'+
+      'background:rgba(12,18,32,0.97);color:#c8d8e8;'+
+      'font-family:"Segoe UI",system-ui,monospace;font-size:13px;'+
+      'border-top:2px solid #3a7bd5;z-index:2147483647;max-height:48vh;overflow-y:auto;'+
+      'padding:10px 16px 14px;box-sizing:border-box;box-shadow:0 -4px 24px rgba(0,0,0,0.6)';
+
+    var hdr = document.createElement('div');
+    hdr.style.cssText = 'font-weight:bold;color:#7ab8f5;margin-bottom:8px;'+
+      'display:flex;align-items:center;justify-content:space-between';
+    var hspan = document.createElement('span');
+    hspan.textContent = '🔑 Cheat Panel — ' + location.pathname.split('/').pop();
+    var xbtn = document.createElement('button');
+    xbtn.textContent = '×'; xbtn.title = 'Close (reload to restore)';
+    xbtn.style.cssText = 'background:none;border:none;color:#7ab8f5;font-size:18px;'+
+      'cursor:pointer;padding:0 4px;line-height:1';
+    xbtn.onclick = function() { panel.remove(); };
+    hdr.appendChild(hspan); hdr.appendChild(xbtn); panel.appendChild(hdr);
+
+    var tbl = document.createElement('table');
+    tbl.style.cssText = 'border-collapse:collapse;width:100%;margin-bottom:10px';
+    var hrow = tbl.createTHead().insertRow();
+    ['Parameter','Type/Values','Control','Description'].forEach(function(h) {
+      var th = document.createElement('th');
+      th.textContent = h;
+      th.style.cssText = 'text-align:left;padding:4px 10px;border-bottom:1px solid #1e3050;'+
+        'color:#5a8fc0;font-size:11px;text-transform:uppercase;letter-spacing:.06em;white-space:nowrap';
+      hrow.appendChild(th);
+    });
+    var tbody = tbl.createTBody();
+    CHEAT_DEFS.forEach(function(d) {
+      var row = tbody.insertRow(), isSet = _cpQ.has(d.name);
+      row.style.cssText = 'border-bottom:1px solid #131f30;'+
+        (isSet ? 'background:rgba(58,123,213,0.08)' : '');
+      var nc = row.insertCell();
+      nc.style.cssText = 'padding:5px 10px;font-weight:bold;font-size:12px;'+
+        'color:'+(isSet?'#a8d4ff':'#7fa8d0')+';white-space:nowrap;font-family:monospace';
+      nc.textContent = d.name;
+      var tc = row.insertCell();
+      tc.style.cssText = 'padding:5px 10px;color:#5a7a90;font-size:11px;font-family:monospace';
+      tc.textContent = typeLabel(d);
+      var cc = row.insertCell();
+      cc.style.cssText = 'padding:4px 10px;white-space:nowrap';
+      cc.appendChild(makeControl(d));
+      var dc = row.insertCell();
+      dc.style.cssText = 'padding:5px 10px;color:#8aa0b0;font-size:12px';
+      dc.textContent = (d.desc||'')+(d.default!==undefined?' (default: '+d.default+')':'');
+    });
+    panel.appendChild(tbl);
+
+    var urlBox = document.createElement('div');
+    urlBox.style.cssText = 'background:#080d1a;border:1px solid #1e3050;border-radius:4px;'+
+      'padding:7px 12px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap';
+    var ulbl = document.createElement('span');
+    ulbl.style.cssText = 'color:#5a8fc0;font-size:11px;text-transform:uppercase;'+
+      'letter-spacing:.06em;white-space:nowrap;flex-shrink:0';
+    ulbl.textContent = 'Embed URL:';
+    var ulink = document.createElement('a');
+    ulink.style.cssText = 'color:#5fba7d;word-break:break-all;font-size:12px;'+
+      'font-family:monospace;text-decoration:none';
+    ulink.href = buildCleanUrl({}); ulink.textContent = buildCleanUrl({});
+    ulink.onclick = function(e) { e.preventDefault(); location.href=buildCheatUrl({}); };
+    var cpybtn = document.createElement('button');
+    cpybtn.textContent = 'copy';
+    cpybtn.style.cssText = 'background:#1a3050;color:#7ab8f5;border:1px solid #2a4a70;'+
+      'border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;'+
+      'white-space:nowrap;flex-shrink:0;margin-left:4px';
+    cpybtn.onclick = function() {
+      navigator.clipboard && navigator.clipboard.writeText(buildCleanUrl({}));
+      cpybtn.textContent = '✓ copied';
+      setTimeout(function() { cpybtn.textContent = 'copy'; }, 1500);
+    };
+    urlBox.appendChild(ulbl); urlBox.appendChild(ulink); urlBox.appendChild(cpybtn);
+    panel.appendChild(urlBox);
+    document.body.appendChild(panel);
+  }
+  render();
+})();
 </script>
 </body>
 </html>

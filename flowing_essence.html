@@ -109,6 +109,7 @@ const KPAP = 4.8e6 * CFG.strength;   // charged stick pulls paper
 
 /* ─── state ────────────────────────────────────────────────────── */
 let stick, flyers, papers, hand, glove, sparks, flows, hover, drag, prev;
+let clock = 0;
 
 function reset() {
   stick = { x: 200, y: 268, on: CFG.power, crackle: 0 };
@@ -150,7 +151,7 @@ function addFlow(x0, y0, x1, y1, n) {
   if (MODEL === 'none') return;
   const d = Math.hypot(x1 - x0, y1 - y0) || 1;
   for (let i = 0; i < (n || 1); i++) {
-    const bow = (Math.random() - 0.5) * 26;
+    const bow = (Math.random() - 0.5) * 12;
     flows.push({ x0: x0, y0: y0, x1: x1, y1: y1,
                  t: -i * 0.05, dur: 0.32 + Math.random() * 0.14,
                  ax: -(y1 - y0) / d * bow, ay: (x1 - x0) / d * bow });
@@ -325,6 +326,7 @@ function step(dt) {
     flows[i].t += dt;
     if (flows[i].t >= flows[i].dur) flows.splice(i, 1);
   }
+  clock += dt;
 }
 
 /* ─── drawing ──────────────────────────────────────────────────── */
@@ -334,14 +336,22 @@ function step(dt) {
    which stays put. */
 const RED = '#d94141', BLUE = '#3466c4';
 
-function essence(x, y, r, alpha) {
-  const a = alpha == null ? 1 : alpha;
-  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-  g.addColorStop(0.00, 'rgba(217,65,65,' + (0.88 * a).toFixed(3) + ')');
-  g.addColorStop(0.55, 'rgba(217,65,65,' + (0.52 * a).toFixed(3) + ')');
-  g.addColorStop(1.00, 'rgba(217,65,65,0)');
+/* A pool of charge. There are no pieces of it: the more an object holds,
+   the wider and the brighter the pool sits inside it. */
+function pool(x, y, rx, ry, amount) {
+  const a = Math.max(0, Math.min(1, amount));
+  if (a < 0.02) return;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(rx, ry);
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+  g.addColorStop(0.00, 'rgba(206,32,32,' + (0.26 + 0.60 * a).toFixed(3) + ')');
+  g.addColorStop(0.40, 'rgba(217,60,60,' + (0.20 + 0.50 * a).toFixed(3) + ')');
+  g.addColorStop(0.74, 'rgba(226,92,84,' + (0.09 + 0.26 * a).toFixed(3) + ')');
+  g.addColorStop(1.00, 'rgba(232,112,98,0)');
   ctx.fillStyle = g;
-  ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(0, 0, 1, 0, 7); ctx.fill();
+  ctx.restore();
 }
 
 function sign(x, y, positive, s) {
@@ -388,10 +398,16 @@ function polarAxis(x, y, skip) {
 
 /* charge sitting on the charging tip */
 function drawStickCharge(x, y) {
+  if (MODEL === 'one') {
+    /* the stick is a source, so its pool is always full, give or take a
+       slow shimmer */
+    const a = 0.84 + 0.16 * Math.sin(clock * 3.4);
+    pool(x, y - 2, 27, 24, a);
+    return;
+  }
   for (let i = 0; i < 5; i++) {
     const a = -Math.PI + i * Math.PI / 4;
     const px = x + Math.cos(a) * 30, py = y + Math.sin(a) * 26;
-    if (MODEL === 'one') { essence(px, py, 12); continue; }
     if (MODEL === 'two') { sign(px, py, false, 4.6); continue; }
     ctx.strokeStyle = '#2b6fd0'; ctx.lineWidth = 2;
     ctx.beginPath();
@@ -408,9 +424,9 @@ function drawFlyerCharge(f, A, B, op) {
   const sx = Math.max(7.5, A * 1.15), sy = B * 0.80;
 
   if (MODEL === 'one') {
-    if (f.q <= 0.05) return;
-    const pts = scatter(Math.max(1, Math.round(f.q * 6)), f.seed);
-    for (const p of pts) essence(p[0] * sx, p[1] * sy, 9);
+    /* one pool, filling more of the flyer the more charge it holds */
+    pool(0, 0, Math.max(11, sx * 2.0) * (0.62 + 0.38 * f.q),
+               sy * (0.66 + 0.34 * f.q), f.q);
     return;
   }
 
@@ -465,14 +481,41 @@ function drawPaperCharge(p) {
   sign(-lx, -ly, false, 3.0);
 }
 
+/* Charge on the move. In the one-fluid picture it runs along as a band of
+   the same red stuff; in the two-fluid one it is negative charge leaving,
+   so it goes as a couple of red signs. */
 function drawFlows() {
   for (const fl of flows) {
     if (fl.t < 0) continue;
-    const u = Math.min(1, fl.t / fl.dur);
-    const bow = Math.sin(Math.PI * u);
-    essence(fl.x0 + (fl.x1 - fl.x0) * u + fl.ax * bow,
-            fl.y0 + (fl.y1 - fl.y0) * u + fl.ay * bow,
-            8, 0.35 + 0.65 * bow);
+    const p = Math.min(1, fl.t / fl.dur);
+    const fade = Math.sin(Math.PI * p);
+    const at = u => [fl.x0 + (fl.x1 - fl.x0) * u + fl.ax * Math.sin(Math.PI * u),
+                     fl.y0 + (fl.y1 - fl.y0) * u + fl.ay * Math.sin(Math.PI * u)];
+
+    if (MODEL === 'two') {
+      const h = at(Math.min(1, p * 1.2));
+      sign(h[0], h[1], false, 4.0);
+      const b = at(Math.max(0, p * 1.2 - 0.22));
+      sign(b[0], b[1], false, 3.4);
+      continue;
+    }
+
+    const head = Math.min(1, p * 1.55);
+    const tail = Math.max(0, (p - 0.36) * 1.55);
+    if (head - tail < 0.01) continue;
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    const widths = [19, 11, 5];
+    const alphas = [0.12, 0.26, 0.56];
+    for (let k = 0; k < 3; k++) {
+      ctx.strokeStyle = 'rgba(214,52,52,' + (alphas[k] * fade).toFixed(3) + ')';
+      ctx.lineWidth = widths[k];
+      ctx.beginPath();
+      for (let i = 0; i <= 8; i++) {
+        const q = at(tail + (head - tail) * i / 8);
+        if (i) ctx.lineTo(q[0], q[1]); else ctx.moveTo(q[0], q[1]);
+      }
+      ctx.stroke();
+    }
   }
 }
 
