@@ -24,13 +24,17 @@
 (function () {
 'use strict';
 
-/* ─── which picture of charge this file draws ────────────────── */
-/* 'none' is the bare apparatus, 'one' the single red charge stuff that
-   flows from object to object, 'two' the red and blue charge that sit
-   inside everything. Everything below this line is the same in
-   fly_stick.html, flowing_essence.html and electric_induction.html, so
-   a diff between the three shows only the title and this constant. */
-const DEFAULT_MODEL = 'none';
+/* ─── three sims in one file ─────────────────────────────────── */
+/* ?model= picks which picture of charge is drawn over the apparatus.
+   'none' is the bare bench, 'one' the single red charge stuff that flows
+   from object to object, 'two' the red and blue charge that sit inside
+   everything. The apparatus itself is identical in all three, which is
+   the point: only the explanation on top of it changes. */
+const MODELS = {
+  none: 'Fun Fly Stick, Flyers and Paper',
+  one:  'The Charge Model',
+  two:  'Positive and Negative Charge Inside Everything'
+};
 
 /* ─── query params ─────────────────────────────────────────────── */
 const Q    = new URLSearchParams(location.search);
@@ -39,11 +43,8 @@ const bool = (k, d) => Q.has(k) ? Q.get(k) !== '0' : d;
 
 const clampi = (v, lo, hi) => Math.max(lo, Math.min(hi, Math.round(v)));
 
-const MODEL = (() => {
-  const m = Q.get('model') || DEFAULT_MODEL;
-  return (m === 'one' || m === 'two') ? m : 'none';
-})();
-window.SIM_DEFAULT_MODEL = DEFAULT_MODEL;   /* the cheat panel reads this */
+const MODEL = MODELS[Q.get('model')] ? Q.get('model') : 'none';
+document.title = MODELS[MODEL];
 
 const CFG = {
   power:    bool('power',  false),
@@ -1064,8 +1065,7 @@ requestAnimationFrame(loop);
 
   // ── CONFIGURE: one entry per exposed URL param ──────────────────────────
   var CHEAT_DEFS = [
-    {name:'model',    type:'select', values:['none','one','two'],
-                              default:(window.SIM_DEFAULT_MODEL||'none'),
+    {name:'model',    type:'select', values:['none','one','two'],  default:'none',
                                                            desc:'Which picture of charge is drawn on top: none, one red charge stuff, or two kinds'},
     {name:'power',    type:'toggle',                              default:0,   desc:'Stick starts switched on'},
     {name:'flyers',   type:'number', min:0,   max:3,   step:1,    default:2,   desc:'How many flyers'},
@@ -1074,8 +1074,8 @@ requestAnimationFrame(loop);
     {name:'ruler',    type:'toggle',                              default:1,   desc:'Show the plastic ruler'},
     {name:'labels',   type:'toggle',                              default:1,   desc:'Show the "flyer" / "paper" labels'},
     {name:'charges',  type:'toggle',
-                              default:(window.SIM_DEFAULT_MODEL!=='none')?1:0,
-                                                           desc:'Show the charge marks'},
+                              default:(_cpQ.get('model')||'none')!=='none'?1:0,
+                                                           desc:'Show the charge marks; a model other than none turns them on by itself'},
     {name:'sparks',   type:'toggle',                              default:1,   desc:'Show sparks and crackle'},
     {name:'collapse', type:'toggle',                              default:1,   desc:'Flyer pops open when charged, collapses when not'},
     {name:'resetbtn', type:'toggle',                              default:1,   desc:'Show the start-over arrow'},

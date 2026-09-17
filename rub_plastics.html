@@ -24,23 +24,23 @@
 (function () {
 'use strict';
 
-/* ─── whether this file puts a Fun Fly Stick on the bench ────── */
-/* The stick is the one thing here whose charge we already know the sign
-   of, so with it you can pin down which plastic is which. Everything
-   below this line is the same in rub_plastics.html and
-   add_stick_plastic.html, so a diff between the two shows only the title
-   and this constant. */
-const DEFAULT_STICK = false;
+/* ─── two sims in one file ───────────────────────────────────── */
+/* ?stick=1 puts a Fun Fly Stick on the bench. It is the one charge here
+   whose sign we already know, so with it you can pin down which plastic
+   is which; without it, rubbing alone only tells you which pairs are
+   opposite. The plastics behave the same either way. */
+const TITLES = {
+  0: 'Rubbing Plastics Together',
+  1: 'Rubbing Plastics, with a Fun Fly Stick'
+};
 
 /* ─── query params ─────────────────────────────────────────────── */
 const Q    = new URLSearchParams(location.search);
 const num  = (k, d) => Q.has(k) && isFinite(+Q.get(k)) ? +Q.get(k) : d;
 const bool = (k, d) => Q.has(k) ? Q.get(k) !== '0' : d;
 
-window.SIM_DEFAULT_STICK = DEFAULT_STICK;   /* the cheat panel reads this */
-
 const CFG = {
-  stick:    bool('stick', DEFAULT_STICK),
+  stick:    bool('stick', false),
   power:    bool('power', false),
   sponge:   bool('sponge', true),
   labels:   bool('labels', true),
@@ -52,6 +52,8 @@ const CFG = {
   rublen:   Math.max(20, num('rublen', 210)),
   strength: Math.max(0.05, num('strength', 1))
 };
+
+document.title = TITLES[CFG.stick ? 1 : 0];
 
 /* ─── canvas ───────────────────────────────────────────────────── */
 const DESIGN_W = 900, DESIGN_H = 600;
@@ -734,8 +736,7 @@ requestAnimationFrame(loop);
 
   // ── CONFIGURE: one entry per exposed URL param ──────────────────────────
   var CHEAT_DEFS = [
-    {name:'stick',    type:'toggle', default:(window.SIM_DEFAULT_STICK?1:0),
-                                                             desc:'Put a Fun Fly Stick on the bench'},
+    {name:'stick',    type:'toggle',                              default:0,   desc:'Put a Fun Fly Stick on the bench, so the signs can be pinned down'},
     {name:'power',    type:'toggle',                              default:0,   desc:'Stick starts switched on'},
     {name:'signs',    type:'toggle',                              default:0,   desc:'Give away the answer: stamp + or - on a charged plastic'},
     {name:'sponge',   type:'toggle',                              default:1,   desc:'Show the damp sponge that wipes the charge off'},
