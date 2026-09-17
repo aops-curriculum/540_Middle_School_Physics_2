@@ -5,128 +5,764 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="eigennode-aspect" content="3/2">
 <title>Top Tape and Bottom Tape</title>
-<link rel="stylesheet" href="shared/sim.css">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    background: #ffffff;
+    font-family: Arial, sans-serif;
+    user-select: none; -webkit-user-select: none;
+    touch-action: none;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
 </head>
 <body>
+<canvas id="c"></canvas>
 
-<p id="hint">Tear off a pair of strips: they were stuck together on the desk, T on top and B on the bottom, and pulled apart. Drag them near each other, and near a flyer, to see what they do.</p>
-
-<div id="cwrap"><div id="stage"><canvas id="canvas"></canvas></div></div>
-
-<div id="controls">
-  <div class="row">
-    <button id="peel">Tear off a new pair (T and B)</button>
-    <button id="flyer">Add a flyer</button>
-    <button id="reset">Start over</button>
-  </div>
-  <div class="row"><span class="note">Tape is plastic, so charge stays where it lands. Nothing flows when two strips touch.</span></div>
-</div>
-
-<script src="shared/charges.js"></script>
 <script>
 (function () {
-  var CS = window.ChargeSim;
-  var W = 900, H = 600;
-  var canvas = document.getElementById('canvas');
-  var world = new CS.World({ W: W, H: H, bounds: { x0: 30, y0: 30, x1: W - 30, y1: H - 30 } });
+'use strict';
 
-  // Peeling the strips apart moves charge from one to the other, so they come
-  // off with equal and opposite charge. Top comes off positive.
-  var TAPE_Q = 2.4;
-  var pairCount = 0;
+/* ─── which picture of charge this file draws ────────────────── */
+/* 'surplus' marks only the charge a strip came away with, 'two' opens
+   every object up and shows both kinds inside it, 'none' draws the bare
+   strips. The apparatus and the drawing style match fly_stick.html and
+   its two siblings. */
+const DEFAULT_MODEL = 'surplus';
 
-  // Tape and flyer are both insulators here: nothing is exchanged on contact.
-  world.onContact = function () { return true; };
+/* ─── query params ─────────────────────────────────────────────── */
+const Q    = new URLSearchParams(location.search);
+const num  = (k, d) => Q.has(k) && isFinite(+Q.get(k)) ? +Q.get(k) : d;
+const bool = (k, d) => Q.has(k) ? Q.get(k) !== '0' : d;
 
-  function addPair() {
-    pairCount++;
-    // Well separated, so a fresh pair drifts together slowly instead of
-    // snapping shut before anyone can look at it.
-    var y = 130 + ((pairCount - 1) % 3) * 170;
-    world.add({ id: 'T' + pairCount, kind: 'tape', x: 150, y: y, r: 34,
-                q: TAPE_Q, conductor: false, label: 'T', data: { tint: '#3466c4' } });
-    world.add({ id: 'B' + pairCount, kind: 'tape', x: 560, y: y, r: 34,
-                q: -TAPE_Q, conductor: false, label: 'B', data: { tint: '#d94141' } });
-  }
+const clampi = (v, lo, hi) => Math.max(lo, Math.min(hi, Math.round(v)));
 
-  function addFlyer() {
-    world.add({ id: 'fl' + (world.bodies.length), kind: 'flyer',
-                x: 790, y: 110 + (world.bodies.length % 4) * 120, r: 28, q: 0, conductor: false });
-  }
+const MODEL = (() => {
+  const m = Q.get('model') || DEFAULT_MODEL;
+  return (m === 'two' || m === 'none') ? m : 'surplus';
+})();
+window.SIM_DEFAULT_MODEL = DEFAULT_MODEL;   /* the cheat panel reads this */
 
-  function build() {
-    world.bodies.length = 0;
-    pairCount = 0;
-    addPair();
-    addFlyer();
-  }
+const CFG = {
+  npairs:   clampi(num('pairs', 1), 0, 3),
+  maxpairs: clampi(num('maxpairs', 3), 1, 3),
+  nflyers:  clampi(num('flyers', 1), 0, 3),
+  charges:  bool('charges', MODEL !== 'none'),
+  labels:   bool('labels', true),
+  resetbtn: bool('resetbtn', true),
+  strength: Math.max(0.05, num('strength', 1))
+};
 
-  var m = CS.mountCanvas(canvas, W, H, draw);
+/* ─── canvas ───────────────────────────────────────────────────── */
+const DESIGN_W = 900, DESIGN_H = 600;
+const W = DESIGN_W, H = DESIGN_H;
+const FLOOR = 520;
+const RESET_X = 856, RESET_Y = 558, RESET_R = 16;
 
-  function pick(x, y) {
-    for (var i = world.bodies.length - 1; i >= 0; i--) {
-      var b = world.bodies[i];
-      var dx = x - b.x, dy = y - b.y;
-      if (dx * dx + dy * dy < (b.r + 8) * (b.r + 8)) return b;
+/* the roll of tape you tear the strips off */
+const ROLL_X = 112, ROLL_Y = 452, ROLL_R = 56;
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+function fit() {
+  const dpr = window.devicePixelRatio || 1;
+  const cw = canvas.clientWidth, ch = canvas.clientHeight;
+  if (!cw || !ch) return;
+  canvas.width  = Math.round(cw * dpr);
+  canvas.height = Math.round(ch * dpr);
+  ctx.setTransform(canvas.width / DESIGN_W, 0, 0, canvas.height / DESIGN_H, 0, 0);
+  draw();
+}
+
+/* ─── the strips ───────────────────────────────────────────────── */
+const SW = 28, SH = 86;          /* one strip, before the folded handle */
+const STRIP_R = 36;              /* how close anything gets to its middle */
+
+/* ─── physics constants ────────────────────────────────────────── */
+/* Two charged strips push or pull on each other by 1/r^2. A strip pulls
+   a neutral flyer in by 1/r^3, which is weaker and dies off faster. */
+const KQQ  = 9.0e6 * CFG.strength;
+const KIND = 2.6e8 * CFG.strength;
+const A_MAX = 2400;
+
+/* ─── state ────────────────────────────────────────────────────── */
+let bodies, pairs, sparks, hover, drag, prev;
+
+function addPair() {
+  if (pairs >= CFG.maxpairs) return;
+  const row = pairs % 3;
+  const y = 170 + row * 130;
+  /* Pulling the pair apart moves charge from one strip to the other, so
+     they come away with equal and opposite charge. The top strip comes
+     off positive. */
+  bodies.push(strip('T', 320, y,  1));
+  bodies.push(strip('B', 560, y, -1));
+  pairs++;
+}
+
+function strip(letter, x, y, q) {
+  return { kind: 'tape', letter: letter, x: x, y: y, vx: 0, vy: 0,
+           q: q, r: STRIP_R, hx: SW / 2 + 5, hy: SH / 2 + 5,
+           rot: (Math.random() - 0.5) * 0.12,
+           held: false, seed: 17 + pairs * 53 + (q > 0 ? 0 : 7) };
+}
+
+function addFlyer(i) {
+  bodies.push({ kind: 'flyer', x: 760, y: 150 + i * 150, vx: 0, vy: 0,
+                q: 0, r: 30, hx: 22, hy: 31, rot: i * 0.6 - 0.3,
+                held: false, seed: 101 + i * 29 });
+}
+
+function reset() {
+  bodies = []; pairs = 0; sparks = [];
+  for (let i = 0; i < CFG.npairs; i++) addPair();
+  for (let i = 0; i < CFG.nflyers; i++) addFlyer(i);
+  drag = null; hover = null;
+}
+
+/* ─── helpers ──────────────────────────────────────────────────── */
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function addSpark(x, y, n) {
+  const segs = [];
+  for (let i = 0; i < (n || 3); i++) {
+    const a = Math.random() * Math.PI * 2, len = 10 + Math.random() * 16;
+    const pts = [[0, 0]];
+    let cx = 0, cy = 0;
+    for (let k = 0; k < 3; k++) {
+      cx += Math.cos(a) * len / 3 + (Math.random() - 0.5) * 7;
+      cy += Math.sin(a) * len / 3 + (Math.random() - 0.5) * 7;
+      pts.push([cx, cy]);
     }
-    return null;
+    segs.push(pts);
   }
-  CS.makeDragger(canvas, m.toLogical, pick, {
-    onPick: function () { canvas.classList.add('grabbing'); },
-    onDrop: function () { canvas.classList.remove('grabbing'); }
-  });
+  sparks.push({ x: x, y: y, segs: segs, life: 0.22, t: 0.22 });
+}
 
-  function drawTape(ctx, b) {
-    ctx.save();
-    ctx.translate(b.x, b.y);
-    var w = 26, h = 74;
-    // strip
-    ctx.fillStyle = 'rgba(232,240,248,0.92)';
-    ctx.strokeStyle = '#93a3b3';
-    ctx.lineWidth = 1.4;
-    CS.roundRect(ctx, -w / 2, -h / 2, w, h, 3);
-    ctx.fill(); ctx.stroke();
-    // folded-over handle at the bottom
-    ctx.fillStyle = '#cfdae5';
-    CS.roundRect(ctx, -w / 2, h / 2 - 14, w, 14, 3);
-    ctx.fill(); ctx.stroke();
-    // label
-    ctx.fillStyle = b.data.tint;
-    ctx.font = 'bold 20px Arial';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(b.label, 0, -h / 2 + 18);
-    ctx.restore();
+/* ─── physics ──────────────────────────────────────────────────── */
+function step(dt) {
+  for (const a of bodies) {
+    if (a.held) { a.vx = 0; a.vy = 0; continue; }
+    let ax = 0, ay = 0;
+    for (const b of bodies) {
+      if (b === a) continue;
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const r = Math.max(Math.hypot(dx, dy), a.r + b.r) || 1;
+      let mag;
+      if (a.q && b.q) {
+        /* like charges push apart, opposite ones pull together */
+        mag = -KQQ * a.q * b.q / (r * r);
+      } else if (a.q || b.q) {
+        const q = a.q || b.q;
+        mag = KIND * q * q / (r * r * r);
+      } else continue;
+      mag = Math.max(-A_MAX, Math.min(A_MAX, mag));
+      ax += mag * dx / r; ay += mag * dy / r;
+    }
+    /* the air holds these back a lot: they are light and slow */
+    ax -= a.vx * 2.4; ay -= a.vy * 2.4;
+    a.vx += ax * dt; a.vy += ay * dt;
+    a.x += a.vx * dt; a.y += a.vy * dt;
+
+    const y1 = FLOOR - a.hy - 4;
+    if (a.x < a.hx) { a.x = a.hx; a.vx *= -0.4; }
+    if (a.x > W - a.hx) { a.x = W - a.hx; a.vx *= -0.4; }
+    if (a.y < a.hy) { a.y = a.hy; a.vy *= -0.4; }
+    if (a.y > y1) { a.y = y1; a.vy *= -0.4; }
+    a.rot += a.vx * 0.0004 * dt * 60;
+    a.rot = Math.max(-0.4, Math.min(0.4, a.rot * 0.985));
   }
 
-  function draw() {
-    var ctx = m.ctx;
-    ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
-
-    // desk edge, for a sense of place
-    ctx.strokeStyle = '#e3e9ef'; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(0, H - 26); ctx.lineTo(W, H - 26); ctx.stroke();
-    ctx.fillStyle = '#aeb8c2'; ctx.font = '12px Arial'; ctx.textAlign = 'left';
-    ctx.fillText('desk', 12, H - 10);
-
-    for (var i = 0; i < world.bodies.length; i++) {
-      var b = world.bodies[i];
-      if (b.kind === 'tape') drawTape(ctx, b);
-      else CS.drawFlyer(ctx, b, 0);
+  /* nothing passes through anything, and nothing swaps charge: tape is
+     plastic, so whatever landed on a strip stays there */
+  for (let i = 0; i < bodies.length; i++) {
+    for (let j = i + 1; j < bodies.length; j++) {
+      const a = bodies[i], b = bodies[j];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const d = Math.hypot(dx, dy) || 1e-6;
+      const touch = a.r + b.r;
+      if (d >= touch) continue;
+      const ux = dx / d, uy = dy / d, push = touch - d;
+      const aFree = !a.held, bFree = !b.held;
+      if (aFree && bFree) {
+        a.x -= ux * push / 2; a.y -= uy * push / 2;
+        b.x += ux * push / 2; b.y += uy * push / 2;
+      } else if (aFree) { a.x -= ux * push; a.y -= uy * push; }
+      else if (bFree)   { b.x += ux * push; b.y += uy * push; }
+      const rel = (b.vx - a.vx) * ux + (b.vy - a.vy) * uy;
+      if (rel < 0) {
+        if (aFree) { a.vx += ux * rel / 2; a.vy += uy * rel / 2; }
+        if (bFree) { b.vx -= ux * rel / 2; b.vy -= uy * rel / 2; }
+      }
     }
   }
 
-  function frame() { world.step(); draw(); requestAnimationFrame(frame); }
-  window.scene = { world: world, build: build, draw: draw };  // for console checks
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    sparks[i].life -= dt;
+    if (sparks[i].life <= 0) sparks.splice(i, 1);
+  }
+}
 
-  document.getElementById('peel').addEventListener('click', function () {
-    if (pairCount < 3) addPair();
-  });
-  document.getElementById('flyer').addEventListener('click', addFlyer);
-  document.getElementById('reset').addEventListener('click', build);
+/* ─── the picture of charge ────────────────────────────────────── */
+/* Red is negative charge, blue is positive, the same way round as in the
+   other sims in this set. */
+const RED = '#d94141', BLUE = '#3466c4';
 
-  build();
-  frame();
+function sign(x, y, positive, s) {
+  ctx.beginPath(); ctx.arc(x, y, s, 0, 7);
+  ctx.fillStyle = positive ? BLUE : RED; ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+  ctx.lineWidth = Math.max(1.2, s * 0.36); ctx.lineCap = 'butt';
+  ctx.beginPath();
+  ctx.moveTo(x - s * 0.52, y); ctx.lineTo(x + s * 0.52, y);
+  if (positive) { ctx.moveTo(x, y - s * 0.52); ctx.lineTo(x, y + s * 0.52); }
+  ctx.stroke();
+}
+
+/* a fixed scatter per object, so the marks sit still instead of crawling
+   around from one frame to the next */
+function scatter(n, seed) {
+  const pts = [];
+  let s = seed || 1;
+  const rnd = () => (s = (s * 9301 + 49297) % 233280) / 233280;
+  for (let i = 0; i < n; i++) {
+    const a = rnd() * Math.PI * 2, rr = Math.sqrt(rnd());
+    pts.push([Math.cos(a) * rr, Math.sin(a) * rr]);
+  }
+  return pts;
+}
+
+/* Which way an object's own charge gets pulled, and how hard. A positive
+   strip drags negative charge toward it, so the sign of the source
+   decides which way the marks slide. */
+function polarAxis(b) {
+  let ux = 0, uy = 0, best = 0, sgn = 1;
+  for (const o of bodies) {
+    if (o === b || !o.q) continue;
+    const dx = o.x - b.x, dy = o.y - b.y;
+    const r2 = Math.max(dx * dx + dy * dy, 900);
+    const w = Math.abs(o.q) / r2;
+    if (w > best) {
+      best = w; const r = Math.sqrt(r2);
+      ux = dx / r; uy = dy / r; sgn = o.q < 0 ? 1 : -1;
+    }
+  }
+  return { x: ux * sgn, y: uy * sgn, s: Math.min(1, best * 14000) };
+}
+
+/* charge marks for one object, drawn in its own frame */
+function drawBodyCharge(b, sx, sy, mark, oy) {
+  const cy = oy || 0;
+  if (!CFG.charges || MODEL === 'none') return;
+  const ax = polarAxis(b);
+  const c = Math.cos(b.rot), s = Math.sin(b.rot);
+  const wx = ax.x * ax.s * sx * 0.85, wy = ax.y * ax.s * sy * 0.72;
+  const lx = wx * c + wy * s, ly = -wx * s + wy * c;
+
+  if (MODEL === 'surplus') {
+    if (!b.q) return;
+    const pts = scatter(5, b.seed);
+    for (const p of pts) sign(p[0] * sx, p[1] * sy + cy, b.q > 0, mark);
+    return;
+  }
+  /* both kinds, always: equal amounts in a neutral object, a surplus of
+     one kind in a charged one */
+  const extra = Math.round(Math.abs(b.q) * 4);
+  const nPos = 4 + (b.q > 0 ? extra : 0);
+  const nNeg = 4 + (b.q < 0 ? extra : 0);
+  for (const p of scatter(nPos, b.seed))
+    sign(p[0] * sx + lx, p[1] * sy + ly + cy, true, mark);
+  for (const p of scatter(nNeg, b.seed + 91))
+    sign(p[0] * sx - lx, p[1] * sy - ly + cy, false, mark);
+}
+
+/* ─── drawing ──────────────────────────────────────────────────── */
+function drawFloor() {
+  const g = ctx.createLinearGradient(0, FLOOR, 0, FLOOR + 26);
+  g.addColorStop(0, 'rgba(0,0,0,0.055)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, FLOOR, W, 26);
+  ctx.strokeStyle = '#cfcfcf'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0, FLOOR); ctx.lineTo(W, FLOOR); ctx.stroke();
+}
+
+/* the roll the strips come off. clicking it tears off a fresh pair. */
+function drawRoll() {
+  const hot = hover === 'roll';
+  const full = pairs >= CFG.maxpairs;
+  ctx.save();
+  ctx.translate(ROLL_X, ROLL_Y);
+
+  ctx.fillStyle = 'rgba(0,0,0,0.10)';
+  ctx.beginPath(); ctx.ellipse(4, ROLL_R + 8, ROLL_R * 0.86, 7, 0, 0, 7); ctx.fill();
+
+  /* the wound tape, a little cloudy */
+  const g = ctx.createRadialGradient(-16, -18, 8, 0, 0, ROLL_R);
+  g.addColorStop(0, '#f6fafd');
+  g.addColorStop(0.62, '#dce6ef');
+  g.addColorStop(1, '#c3d0dc');
+  ctx.beginPath(); ctx.arc(0, 0, ROLL_R, 0, 7);
+  ctx.fillStyle = g; ctx.fill();
+  ctx.strokeStyle = full ? '#c2ccd6' : (hot ? '#7d8c98' : '#a7b4c0');
+  ctx.lineWidth = 2; ctx.stroke();
+
+  /* the edge of the wound roll */
+  ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 1.1;
+  ctx.beginPath(); ctx.arc(0, 0, ROLL_R - 5, 0, 7); ctx.stroke();
+  ctx.strokeStyle = 'rgba(150,170,190,0.35)';
+  ctx.beginPath(); ctx.arc(0, 0, ROLL_R - 9, 0, 7); ctx.stroke();
+
+  /* the hub */
+  ctx.beginPath(); ctx.arc(0, 0, 21, 0, 7);
+  ctx.fillStyle = '#ffffff'; ctx.fill();
+  ctx.strokeStyle = '#aab6c2'; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.beginPath(); ctx.arc(0, 0, 13, 0, 7);
+  ctx.fillStyle = '#eef3f8'; ctx.fill(); ctx.stroke();
+
+  /* the loose end, peeling off the side with a torn tip */
+  ctx.fillStyle = 'rgba(238,245,250,0.96)';
+  ctx.strokeStyle = '#a7b4c0'; ctx.lineWidth = 1.3;
+  ctx.beginPath();
+  ctx.moveTo(ROLL_R - 3, -18);
+  ctx.bezierCurveTo(ROLL_R + 22, -20, ROLL_R + 34, -4, ROLL_R + 40, 14);
+  ctx.lineTo(ROLL_R + 22, 20);
+  ctx.bezierCurveTo(ROLL_R + 17, 4, ROLL_R + 10, -2, ROLL_R - 4, 2);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+
+  ctx.restore();
+
+  if (CFG.labels) {
+    ctx.font = 'bold 13px Arial';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = full ? '#b9c1c8' : (hot ? '#4a4a4a' : '#8d959c');
+    ctx.fillText(full ? 'that is all the tape you get'
+                      : 'click for a new pair', ROLL_X, FLOOR + 22);
+    ctx.textAlign = 'left';
+  }
+}
+
+/* One strip, torn off the roll and folded over at the bottom so you have
+   something to hold. T came off the top, B off the bottom. */
+function drawStrip(b) {
+  const tint = b.q > 0 ? BLUE : RED;
+  ctx.save();
+  ctx.translate(b.x, b.y); ctx.rotate(b.rot);
+
+  ctx.fillStyle = 'rgba(0,0,0,0.07)';
+  roundRect(-SW / 2 + 3, -SH / 2 + 4, SW, SH, 3); ctx.fill();
+
+  /* the strip itself: near enough clear, with a sheen down one side */
+  ctx.fillStyle = 'rgba(234,242,249,0.94)';
+  ctx.strokeStyle = '#9aa9b7'; ctx.lineWidth = 1.4;
+  roundRect(-SW / 2, -SH / 2, SW, SH, 3);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  roundRect(-SW / 2 + 3, -SH / 2 + 4, 5, SH - 8, 2.5); ctx.fill();
+  ctx.fillStyle = 'rgba(120,150,175,0.14)';
+  roundRect(SW / 2 - 8, -SH / 2 + 4, 5, SH - 8, 2.5); ctx.fill();
+
+  /* torn top edge */
+  ctx.strokeStyle = 'rgba(150,168,184,0.85)'; ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 0; i <= 6; i++) {
+    const x = -SW / 2 + i * SW / 6;
+    const y = -SH / 2 + ((i % 2) ? 2.6 : 0.6);
+    if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+  }
+  ctx.stroke();
+
+  /* folded-over handle */
+  ctx.fillStyle = '#d3dee8';
+  ctx.strokeStyle = '#9aa9b7'; ctx.lineWidth = 1.2;
+  roundRect(-SW / 2, SH / 2 - 16, SW, 16, 3);
+  ctx.fill(); ctx.stroke();
+
+  drawBodyCharge(b, 8, SH * 0.27, 4.3, 9);
+
+  /* the letter, written on in marker */
+  ctx.fillStyle = tint;
+  ctx.font = 'bold 21px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(b.letter, 0, -SH / 2 + 18);
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+
+  ctx.restore();
+}
+
+/* the flyer, the same twisted loop of metallized plastic as in the other
+   sims. Nothing charges it here, so it stays sagged flat. */
+function drawFlyer(f) {
+  ctx.save();
+  ctx.translate(f.x, f.y); ctx.rotate(f.rot);
+  const R = f.r;
+  const A = R * 0.54 * 0.45;
+  const B = R * 0.98;
+  const WMAX = R * 0.28 * 1.3;
+
+  const N = 132, outer = [], inner = [];
+  for (let i = 0; i <= N; i++) {
+    const t = i / N * Math.PI * 2;
+    const cx = A * Math.sin(2 * t), cy = B * Math.cos(t);
+    const tx = 2 * A * Math.cos(2 * t), ty = -B * Math.sin(t);
+    const m = Math.hypot(tx, ty) || 1;
+    const nx = -ty / m, ny = tx / m;
+    const w = WMAX * (0.14 + 0.86 * Math.abs(Math.cos(1.5 * t)));
+    outer.push([cx + nx * w, cy + ny * w]);
+    inner.push([cx - nx * w, cy - ny * w]);
+  }
+
+  ctx.beginPath();
+  ctx.moveTo(outer[0][0], outer[0][1]);
+  for (let i = 1; i <= N; i++) ctx.lineTo(outer[i][0], outer[i][1]);
+  for (let i = N; i >= 0; i--) ctx.lineTo(inner[i][0], inner[i][1]);
+  ctx.closePath();
+
+  const gw = Math.max(A * 1.3, R * 0.16);
+  const g2 = ctx.createLinearGradient(-gw, -B, gw, B);
+  g2.addColorStop(0.00, '#dfe7ed');
+  g2.addColorStop(0.14, '#ffffff');
+  g2.addColorStop(0.30, '#b4c3ce');
+  g2.addColorStop(0.46, '#f6f9fb');
+  g2.addColorStop(0.62, '#9fb0bd');
+  g2.addColorStop(0.78, '#f2f6f9');
+  g2.addColorStop(1.00, '#c2cdd6');
+  ctx.fillStyle = g2; ctx.fill();
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = '#8fa1af'; ctx.lineWidth = 1.1; ctx.stroke();
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+  ctx.lineWidth = 1.6; ctx.lineCap = 'round';
+  for (const t0 of [0.15, 2.25, 4.35]) {
+    ctx.beginPath();
+    for (let k = 0; k <= 8; k++) {
+      const t = t0 + k * 0.05;
+      const px = A * Math.sin(2 * t), py = B * Math.cos(t);
+      if (k) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+    }
+    ctx.stroke();
+  }
+
+  if (MODEL === 'two') drawBodyCharge(f, 8, B * 0.8, 4.3);
+  ctx.restore();
+}
+
+function drawSparks() {
+  for (const s of sparks) {
+    const a = Math.max(0, s.life / s.t);
+    ctx.strokeStyle = 'rgba(47,128,237,' + (0.85 * a).toFixed(3) + ')';
+    ctx.lineWidth = 1.8; ctx.lineCap = 'round';
+    for (const pts of s.segs) {
+      ctx.beginPath();
+      ctx.moveTo(s.x + pts[0][0], s.y + pts[0][1]);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(s.x + pts[i][0], s.y + pts[i][1]);
+      ctx.stroke();
+    }
+  }
+}
+
+function drawResetIcon() {
+  if (!CFG.resetbtn) return;
+  const hot = hover === 'reset';
+  ctx.save();
+  ctx.translate(RESET_X, RESET_Y);
+  const a0 = -0.35 * Math.PI, a1 = 1.25 * Math.PI, R = 15;
+  ctx.strokeStyle = hot ? '#4a4a4a' : '#a8b0b6';
+  ctx.lineWidth = 3.4; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.arc(0, 0, R, a0, a1); ctx.stroke();
+
+  const tx = R * Math.cos(a1), ty = R * Math.sin(a1);
+  const th = Math.atan2(Math.cos(a1), -Math.sin(a1));
+  ctx.beginPath();
+  ctx.moveTo(tx + Math.cos(th + Math.PI - 0.5) * 10, ty + Math.sin(th + Math.PI - 0.5) * 10);
+  ctx.lineTo(tx, ty);
+  ctx.lineTo(tx + Math.cos(th + Math.PI + 0.5) * 10, ty + Math.sin(th + Math.PI + 0.5) * 10);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function label(text, x, y) {
+  ctx.font = 'bold 14px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.lineWidth = 3.5; ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = '#555555';
+  ctx.fillText(text, x, y);
+  ctx.textAlign = 'left';
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  drawFloor();
+  drawRoll();
+  for (const b of bodies) {
+    if (b.kind === 'tape') drawStrip(b); else drawFlyer(b);
+  }
+  drawSparks();
+
+  if (CFG.labels) {
+    for (const b of bodies)
+      if (b.kind === 'flyer') label('flyer', b.x, Math.min(H - 6, b.y + b.r + 20));
+  }
+  drawResetIcon();
+}
+
+/* ─── pointer ──────────────────────────────────────────────────── */
+function toLogical(e) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - r.left) * DESIGN_W / r.width,
+    y: (e.clientY - r.top)  * DESIGN_H / r.height
+  };
+}
+
+function hitTest(x, y) {
+  if (CFG.resetbtn && Math.hypot(x - RESET_X, y - RESET_Y) < RESET_R + 6)
+    return { type: 'reset' };
+  for (let i = bodies.length - 1; i >= 0; i--) {
+    const b = bodies[i];
+    if (Math.hypot(x - b.x, y - b.y) < b.r + 6) return { type: 'body', o: b };
+  }
+  if (Math.hypot(x - ROLL_X, y - ROLL_Y) < ROLL_R + 8) return { type: 'roll' };
+  return null;
+}
+
+function down(x, y) {
+  const h = hitTest(x, y);
+  if (!h) { drag = null; return; }
+  if (h.type === 'reset') { reset(); return; }
+  if (h.type === 'roll') {
+    if (pairs < CFG.maxpairs) { addPair(); addSpark(ROLL_X + 70, ROLL_Y, 2); }
+    return;
+  }
+  h.o.held = true;
+  drag = { o: h.o, ox: h.o.x - x, oy: h.o.y - y };
+  prev = { x: x, y: y, t: performance.now() };
+  canvas.style.cursor = 'grabbing';
+}
+
+function move(x, y) {
+  if (!drag) {
+    const h = hitTest(x, y);
+    hover = h ? h.type : null;
+    canvas.style.cursor = !h ? 'default'
+      : (h.type === 'reset' || h.type === 'roll') ? 'pointer' : 'grab';
+    return;
+  }
+  const o = drag.o;
+  const nx = x + drag.ox, ny = y + drag.oy;
+  const now = performance.now();
+  const dt = Math.max(0.012, (now - prev.t) / 1000);
+  o.vx = Math.max(-1200, Math.min(1200, (nx - o.x) / dt * 0.5));
+  o.vy = Math.max(-1200, Math.min(1200, (ny - o.y) / dt * 0.5));
+  o.x = nx; o.y = ny;
+  prev = { x: x, y: y, t: now };
+}
+
+function up() {
+  if (drag && drag.o) drag.o.held = false;
+  drag = null;
+  canvas.style.cursor = 'default';
+}
+
+canvas.addEventListener('mousedown', e => { const p = toLogical(e); down(p.x, p.y); });
+window.addEventListener('mousemove', e => { const p = toLogical(e); move(p.x, p.y); });
+window.addEventListener('mouseup', up);
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault(); const p = toLogical(e.touches[0]); down(p.x, p.y);
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault(); const p = toLogical(e.touches[0]); move(p.x, p.y);
+}, { passive: false });
+canvas.addEventListener('touchend', e => { e.preventDefault(); up(); }, { passive: false });
+canvas.addEventListener('touchcancel', e => { e.preventDefault(); up(); }, { passive: false });
+
+/* ─── run ──────────────────────────────────────────────────────── */
+reset();
+new ResizeObserver(fit).observe(canvas);
+fit();
+
+let last = 0;
+function loop(ts) {
+  if (!last) last = ts;
+  let dt = (ts - last) / 1000;
+  last = ts;
+  step(Math.min(dt, 1 / 30));
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+})();
+</script>
+
+<!-- CHEAT PANEL — visible only when ?cheat=1 is in the URL -->
+<script>
+(function () {
+  var _cpQ = new URLSearchParams(location.search);
+  if (_cpQ.get('cheat') !== '1') return;
+
+  // ── CONFIGURE: one entry per exposed URL param ──────────────────────────
+  var CHEAT_DEFS = [
+    {name:'model',    type:'select', values:['surplus','two','none'],
+                              default:(window.SIM_DEFAULT_MODEL||'surplus'),
+                                                           desc:'Which picture of charge is drawn: only the surplus, both kinds, or none'},
+    {name:'pairs',    type:'number', min:0,   max:3,   step:1,    default:1,   desc:'How many pairs of strips are out to start'},
+    {name:'maxpairs', type:'number', min:1,   max:3,   step:1,    default:3,   desc:'How many pairs the roll will give out'},
+    {name:'flyers',   type:'number', min:0,   max:3,   step:1,    default:1,   desc:'How many flyers'},
+    {name:'charges',  type:'toggle',
+                              default:(window.SIM_DEFAULT_MODEL!=='none')?1:0,
+                                                           desc:'Show the charge marks'},
+    {name:'labels',   type:'toggle',                              default:1,   desc:'Show the "flyer" label and the roll caption'},
+    {name:'resetbtn', type:'toggle',                              default:1,   desc:'Show the start-over arrow'},
+    {name:'strength', type:'number', min:0.2, max:3,   step:0.1,  default:1,   desc:'How strongly the strips push and pull'}
+  ];
+  var EMBED_KEYS = ['cheat']; // keys stripped from the embeddable URL
+  // ────────────────────────────────────────────────────────────────────────
+
+  function buildCleanUrl(ov) {
+    var p = new URLSearchParams(location.search);
+    EMBED_KEYS.forEach(function(k) { p.delete(k); });
+    for (var k in ov) { var v=ov[k]; if(v===null||v==='') p.delete(k); else p.set(k,v); }
+    var qs = p.toString();
+    return location.origin + location.pathname + (qs ? '?' + qs : '');
+  }
+  function buildCheatUrl(ov) {
+    var b = buildCleanUrl(ov);
+    return b + (b.indexOf('?') >= 0 ? '&' : '?') + 'cheat=1';
+  }
+  function getEff(d) { var r=_cpQ.get(d.name); return r===null ? String(d.default??'') : r; }
+  function isTruthy(v) { return v!=='0'&&v!=='false'&&v!=='no'&&v!=='off'&&v!==''; }
+
+  function makeControl(d) {
+    var eff = getEff(d);
+    if (d.type === 'toggle') {
+      var on = isTruthy(eff), btn = document.createElement('button');
+      btn.textContent = on ? '1 (on)' : '0 (off)';
+      btn.style.cssText = 'background:'+(on?'#1b3d1b':'#3d1b1b')+';color:'+(on?'#6dca80':'#e07070')+
+        ';border:1px solid '+(on?'#2a7a3a':'#8a2a2a')+';border-radius:3px;padding:3px 10px;'+
+        'cursor:pointer;font-size:12px;min-width:70px';
+      btn.onclick = function() { var u={}; u[d.name]=on?'0':'1'; location.href=buildCheatUrl(u); };
+      return btn;
+    }
+    if (d.type === 'select') {
+      var sel = document.createElement('select');
+      sel.style.cssText = 'background:#0d1b2a;color:#c8d8e8;border:1px solid #2a3f5f;'+
+        'border-radius:3px;padding:3px 8px;font-size:12px;cursor:pointer';
+      d.values.forEach(function(v) {
+        var o = document.createElement('option'); o.value=v; o.textContent=v;
+        if (eff===String(v)) o.selected=true; sel.appendChild(o);
+      });
+      sel.onchange = function() { var u={}; u[d.name]=sel.value; location.href=buildCheatUrl(u); };
+      return sel;
+    }
+    var inp = document.createElement('input');
+    inp.type = d.type==='number' ? 'number' : 'text'; inp.value = eff;
+    if (d.min!==undefined) inp.min=String(d.min);
+    if (d.max!==undefined) inp.max=String(d.max);
+    if (d.step!==undefined) inp.step=String(d.step);
+    inp.style.cssText = 'background:#0d1b2a;color:#c8d8e8;border:1px solid #2a3f5f;'+
+      'border-radius:3px;padding:3px 6px;width:'+(d.type==='number'?'90':'220')+'px;font-size:12px';
+    inp.onchange = function() { var u={}; u[d.name]=inp.value; location.href=buildCheatUrl(u); };
+    return inp;
+  }
+
+  function typeLabel(d) {
+    if (d.type==='toggle') return '0|1';
+    if (d.type==='select') return d.values.join('|');
+    if (d.type==='number'&&d.min!==undefined&&d.max!==undefined) return d.min+'–'+d.max;
+    return d.type;
+  }
+
+  function render() {
+    var panel = document.createElement('div');
+    panel.style.cssText = 'position:fixed;bottom:0;left:0;right:0;'+
+      'background:rgba(12,18,32,0.97);color:#c8d8e8;'+
+      'font-family:"Segoe UI",system-ui,monospace;font-size:13px;'+
+      'border-top:2px solid #3a7bd5;z-index:2147483647;max-height:48vh;overflow-y:auto;'+
+      'padding:10px 16px 14px;box-sizing:border-box;box-shadow:0 -4px 24px rgba(0,0,0,0.6)';
+
+    var hdr = document.createElement('div');
+    hdr.style.cssText = 'font-weight:bold;color:#7ab8f5;margin-bottom:8px;'+
+      'display:flex;align-items:center;justify-content:space-between';
+    var hspan = document.createElement('span');
+    hspan.textContent = '🔑 Cheat Panel — ' + location.pathname.split('/').pop();
+    var xbtn = document.createElement('button');
+    xbtn.textContent = '×'; xbtn.title = 'Close (reload to restore)';
+    xbtn.style.cssText = 'background:none;border:none;color:#7ab8f5;font-size:18px;'+
+      'cursor:pointer;padding:0 4px;line-height:1';
+    xbtn.onclick = function() { panel.remove(); };
+    hdr.appendChild(hspan); hdr.appendChild(xbtn); panel.appendChild(hdr);
+
+    var tbl = document.createElement('table');
+    tbl.style.cssText = 'border-collapse:collapse;width:100%;margin-bottom:10px';
+    var hrow = tbl.createTHead().insertRow();
+    ['Parameter','Type/Values','Control','Description'].forEach(function(h) {
+      var th = document.createElement('th');
+      th.textContent = h;
+      th.style.cssText = 'text-align:left;padding:4px 10px;border-bottom:1px solid #1e3050;'+
+        'color:#5a8fc0;font-size:11px;text-transform:uppercase;letter-spacing:.06em;white-space:nowrap';
+      hrow.appendChild(th);
+    });
+    var tbody = tbl.createTBody();
+    CHEAT_DEFS.forEach(function(d) {
+      var row = tbody.insertRow(), isSet = _cpQ.has(d.name);
+      row.style.cssText = 'border-bottom:1px solid #131f30;'+
+        (isSet ? 'background:rgba(58,123,213,0.08)' : '');
+      var nc = row.insertCell();
+      nc.style.cssText = 'padding:5px 10px;font-weight:bold;font-size:12px;'+
+        'color:'+(isSet?'#a8d4ff':'#7fa8d0')+';white-space:nowrap;font-family:monospace';
+      nc.textContent = d.name;
+      var tc = row.insertCell();
+      tc.style.cssText = 'padding:5px 10px;color:#5a7a90;font-size:11px;font-family:monospace';
+      tc.textContent = typeLabel(d);
+      var cc = row.insertCell();
+      cc.style.cssText = 'padding:4px 10px;white-space:nowrap';
+      cc.appendChild(makeControl(d));
+      var dc = row.insertCell();
+      dc.style.cssText = 'padding:5px 10px;color:#8aa0b0;font-size:12px';
+      dc.textContent = (d.desc||'')+(d.default!==undefined?' (default: '+d.default+')':'');
+    });
+    panel.appendChild(tbl);
+
+    var urlBox = document.createElement('div');
+    urlBox.style.cssText = 'background:#080d1a;border:1px solid #1e3050;border-radius:4px;'+
+      'padding:7px 12px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap';
+    var ulbl = document.createElement('span');
+    ulbl.style.cssText = 'color:#5a8fc0;font-size:11px;text-transform:uppercase;'+
+      'letter-spacing:.06em;white-space:nowrap;flex-shrink:0';
+    ulbl.textContent = 'Embed URL:';
+    var ulink = document.createElement('a');
+    ulink.style.cssText = 'color:#5fba7d;word-break:break-all;font-size:12px;'+
+      'font-family:monospace;text-decoration:none';
+    ulink.href = buildCleanUrl({}); ulink.textContent = buildCleanUrl({});
+    ulink.onclick = function(e) { e.preventDefault(); location.href=buildCheatUrl({}); };
+    var cpybtn = document.createElement('button');
+    cpybtn.textContent = 'copy';
+    cpybtn.style.cssText = 'background:#1a3050;color:#7ab8f5;border:1px solid #2a4a70;'+
+      'border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;'+
+      'white-space:nowrap;flex-shrink:0;margin-left:4px';
+    cpybtn.onclick = function() {
+      navigator.clipboard && navigator.clipboard.writeText(buildCleanUrl({}));
+      cpybtn.textContent = '✓ copied';
+      setTimeout(function() { cpybtn.textContent = 'copy'; }, 1500);
+    };
+    urlBox.appendChild(ulbl); urlBox.appendChild(ulink); urlBox.appendChild(cpybtn);
+    panel.appendChild(urlBox);
+    document.body.appendChild(panel);
+  }
+  render();
 })();
 </script>
 </body>

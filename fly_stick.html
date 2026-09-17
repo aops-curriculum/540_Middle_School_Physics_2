@@ -24,6 +24,14 @@
 (function () {
 'use strict';
 
+/* ─── which picture of charge this file draws ────────────────── */
+/* 'none' is the bare apparatus, 'one' the single red charge stuff that
+   flows from object to object, 'two' the red and blue charge that sit
+   inside everything. Everything below this line is the same in
+   fly_stick.html, flowing_essence.html and electric_induction.html, so
+   a diff between the three shows only the title and this constant. */
+const DEFAULT_MODEL = 'none';
+
 /* ─── query params ─────────────────────────────────────────────── */
 const Q    = new URLSearchParams(location.search);
 const num  = (k, d) => Q.has(k) && isFinite(+Q.get(k)) ? +Q.get(k) : d;
@@ -31,9 +39,15 @@ const bool = (k, d) => Q.has(k) ? Q.get(k) !== '0' : d;
 
 const clampi = (v, lo, hi) => Math.max(lo, Math.min(hi, Math.round(v)));
 
+const MODEL = (() => {
+  const m = Q.get('model') || DEFAULT_MODEL;
+  return (m === 'one' || m === 'two') ? m : 'none';
+})();
+window.SIM_DEFAULT_MODEL = DEFAULT_MODEL;   /* the cheat panel reads this */
+
 const CFG = {
   power:    bool('power',  false),
-  charges:  bool('charges', false),
+  charges:  bool('charges', MODEL !== 'none'),
   nflyers:  clampi(num('flyers', 2), 0, 3),
   npapers:  clampi(num('papers', 6), 0, 14),
   /* the metal spoon grounds the stick; the plastic ruler insulates it.
@@ -94,7 +108,7 @@ const KATT = 6.0e6 * CFG.strength;   // charged stick pulls a neutral flyer
 const KPAP = 4.8e6 * CFG.strength;   // charged stick pulls paper
 
 /* ─── state ────────────────────────────────────────────────────── */
-let stick, flyers, papers, hand, glove, sparks, hover, drag, prev;
+let stick, flyers, papers, hand, glove, sparks, flows, hover, drag, prev;
 
 function reset() {
   stick = { x: 200, y: 268, on: CFG.power, crackle: 0 };
@@ -102,15 +116,15 @@ function reset() {
   const fx = [400, 520, 645];
   for (let i = 0; i < CFG.nflyers; i++)
     flyers.push({ x: fx[i], y: FLOOR - 30, vx: 0, vy: 0, q: 0, r: 30,
-                  rot: i * 0.5 - 0.25, held: false,
+                  rot: i * 0.5 - 0.25, held: false, seed: 7 + i * 31,
                   open: CFG.collapse ? 0 : 1 });
   papers = [];
   for (let i = 0; i < CFG.npapers; i++)
-    papers.push({ x: 600 + i * 26, y: FLOOR - 5, vx: 0, vy: 0,
+    papers.push({ x: 600 + i * 26, y: FLOOR - 5, vx: 0, vy: 0, seed: 13 + i * 19,
                   rot: (i * 1.7) % 1.4 - 0.7, stuck: null, held: false });
   hand  = { x: 835, y: 330 };          /* the spoon */
   glove = { x: 782, y: 462, worn: false };  /* the plastic ruler */
-  sparks = [];
+  sparks = []; flows = [];
   drag = null; hover = null;
 }
 
@@ -128,6 +142,19 @@ function roundRect(x, y, w, h, r) {
 /* the red button rides on the wand, but never leaves the screen */
 function btnPos() {
   return { x: stick.x, y: Math.min(stick.y + BTN_Y, BTN_Y_MAX) };
+}
+
+/* A run of charge from one place to another, drawn as red stuff on the
+   move. Only the sims that draw a charge picture use it. */
+function addFlow(x0, y0, x1, y1, n) {
+  if (MODEL === 'none') return;
+  const d = Math.hypot(x1 - x0, y1 - y0) || 1;
+  for (let i = 0; i < (n || 1); i++) {
+    const bow = (Math.random() - 0.5) * 26;
+    flows.push({ x0: x0, y0: y0, x1: x1, y1: y1,
+                 t: -i * 0.05, dur: 0.32 + Math.random() * 0.14,
+                 ax: -(y1 - y0) / d * bow, ay: (x1 - x0) / d * bow });
+  }
 }
 
 function addSpark(x, y, n) {
@@ -183,6 +210,7 @@ function step(dt) {
   /* spoon shorting out the stick */
   if (stick.on && sq === 0 && onWand && drainCd === 0) {
     addSpark(onWand.x, onWand.y, 3); drainCd = 0.28;
+    addFlow(onWand.x, onWand.y, hand.x, hand.y + 58, 3);
   }
 
   /* crackle at the tip while the stick is charged */
@@ -210,6 +238,7 @@ function step(dt) {
     /* the bare spoon drains a charged flyer */
     if (ht && f.q > 0.02 && Math.hypot(ht.x - f.x, ht.y - f.y) < f.r * 0.85 + 12) {
       f.q = 0; addSpark(ht.x, ht.y, 3);
+      addFlow(f.x, f.y, hand.x, hand.y + 58, 4);
     }
 
     /* touching the charged tip loads the flyer up with the same charge */
@@ -221,6 +250,7 @@ function step(dt) {
         f.vx = 0; f.vy = f.q >= 1 ? -50 : 0;
       }
       if (f.q < 1 && Math.random() < dt * 8) addSpark(stick.x, stick.y, 1);
+      if (f.q < 1 && Math.random() < dt * 16) addFlow(stick.x, stick.y, f.x, f.y, 1);
       if (!f.held) continue;
     }
     if (f.held) continue;
@@ -291,9 +321,161 @@ function step(dt) {
     sparks[i].life -= dt;
     if (sparks[i].life <= 0) sparks.splice(i, 1);
   }
+  for (let i = flows.length - 1; i >= 0; i--) {
+    flows[i].t += dt;
+    if (flows[i].t >= flows[i].dur) flows.splice(i, 1);
+  }
 }
 
 /* ─── drawing ──────────────────────────────────────────────────── */
+/* ─── the picture of charge, drawn on the apparatus ──────────── */
+/* Red is the charge that moves: the one stuff in the one-fluid picture,
+   the negative charge in the two-fluid one. Blue is positive charge,
+   which stays put. */
+const RED = '#d94141', BLUE = '#3466c4';
+
+function essence(x, y, r, alpha) {
+  const a = alpha == null ? 1 : alpha;
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0.00, 'rgba(217,65,65,' + (0.88 * a).toFixed(3) + ')');
+  g.addColorStop(0.55, 'rgba(217,65,65,' + (0.52 * a).toFixed(3) + ')');
+  g.addColorStop(1.00, 'rgba(217,65,65,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+}
+
+function sign(x, y, positive, s) {
+  ctx.beginPath(); ctx.arc(x, y, s, 0, 7);
+  ctx.fillStyle = positive ? BLUE : RED; ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+  ctx.lineWidth = Math.max(1.2, s * 0.36); ctx.lineCap = 'butt';
+  ctx.beginPath();
+  ctx.moveTo(x - s * 0.52, y); ctx.lineTo(x + s * 0.52, y);
+  if (positive) { ctx.moveTo(x, y - s * 0.52); ctx.lineTo(x, y + s * 0.52); }
+  ctx.stroke();
+}
+
+/* a fixed scatter per object, so the marks sit still instead of crawling
+   around from one frame to the next */
+function scatter(n, seed) {
+  const pts = [];
+  let s = seed || 1;
+  const rnd = () => (s = (s * 9301 + 49297) % 233280) / 233280;
+  for (let i = 0; i < n; i++) {
+    const a = rnd() * Math.PI * 2, rr = Math.sqrt(rnd());
+    pts.push([Math.cos(a) * rr, Math.sin(a) * rr]);
+  }
+  return pts;
+}
+
+/* Which way the charge inside an object gets pulled, and how hard.
+   Everything charged in this sim is charged the same way as the stick, so
+   an object's own positive charge always slides toward the nearest strong
+   charge and its negative charge slides away. */
+function polarAxis(x, y, skip) {
+  let ux = 0, uy = 0, best = 0;
+  function look(cx, cy, q) {
+    const dx = cx - x, dy = cy - y;
+    const r2 = Math.max(dx * dx + dy * dy, 900);
+    const w = q / r2;
+    if (w > best) { best = w; const r = Math.sqrt(r2); ux = dx / r; uy = dy / r; }
+  }
+  const sq = stickCharge();
+  if (sq > 0) look(stick.x, stick.y, 2.2 * sq);
+  for (const f of flyers) if (f !== skip && f.q > 0.05) look(f.x, f.y, f.q);
+  return { x: ux, y: uy, s: Math.min(1, best * 14000) };
+}
+
+/* charge sitting on the charging tip */
+function drawStickCharge(x, y) {
+  for (let i = 0; i < 5; i++) {
+    const a = -Math.PI + i * Math.PI / 4;
+    const px = x + Math.cos(a) * 30, py = y + Math.sin(a) * 26;
+    if (MODEL === 'one') { essence(px, py, 12); continue; }
+    if (MODEL === 'two') { sign(px, py, false, 4.6); continue; }
+    ctx.strokeStyle = '#2b6fd0'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(px - 4, py); ctx.lineTo(px + 4, py);
+    ctx.moveTo(px, py - 4); ctx.lineTo(px, py + 4);
+    ctx.stroke();
+  }
+}
+
+/* Charge marks for a flyer. The caller has already moved and turned the
+   canvas, so these are in the flyer's own frame. */
+function drawFlyerCharge(f, A, B, op) {
+  if (!CFG.charges) return;
+  const sx = Math.max(7.5, A * 1.15), sy = B * 0.80;
+
+  if (MODEL === 'one') {
+    if (f.q <= 0.05) return;
+    const pts = scatter(Math.max(1, Math.round(f.q * 6)), f.seed);
+    for (const p of pts) essence(p[0] * sx, p[1] * sy, 9);
+    return;
+  }
+
+  if (MODEL === 'two') {
+    /* Both kinds are always there. A neutral flyer holds equal amounts, a
+       charged one has a surplus of red, and a charge nearby slides the two
+       kinds to opposite ends. */
+    /* a sagged flyer is a narrow sliver, so it gets fewer marks than an
+       open one, or they would land on top of each other */
+    const base = 2 + Math.round(2 * op);
+    const extra = Math.round(f.q * 3);
+    const ax = polarAxis(f.x, f.y, f);
+    const c = Math.cos(f.rot), s = Math.sin(f.rot);
+    const wx = ax.x * ax.s * sx * 0.85, wy = ax.y * ax.s * sy * 0.72;
+    const lx = wx * c + wy * s, ly = -wx * s + wy * c;
+    for (const p of scatter(base, f.seed))
+      sign(p[0] * sx + lx, p[1] * sy + ly, true, 4.3);
+    for (const p of scatter(base + extra, f.seed + 91))
+      sign(p[0] * sx - lx, p[1] * sy - ly, false, 4.3);
+    return;
+  }
+
+  if (f.q <= 0.05) return;
+  ctx.strokeStyle = '#2b6fd0'; ctx.lineWidth = 2;
+  for (const t of [0.5, 2.2, 3.9, 5.5]) {
+    const px = A * Math.sin(2 * t) * 1.35, py = B * Math.cos(t) * 1.1;
+    ctx.beginPath();
+    ctx.moveTo(px - 4, py); ctx.lineTo(px + 4, py);
+    ctx.moveTo(px, py - 4); ctx.lineTo(px, py + 4);
+    ctx.stroke();
+  }
+}
+
+/* A bit of paper is neutral the whole time. In the two-charge picture you
+   can watch its own charge slide apart when the stick comes near, which is
+   why a neutral scrap gets pulled in at all. */
+function drawPaperCharge(p) {
+  if (!CFG.charges || MODEL !== 'two') return;
+  const c = Math.cos(p.rot), s = Math.sin(p.rot);
+  const ax = polarAxis(p.x, p.y, null);
+  let vx = c, vy = s;
+  if (ax.s > 0.02) {
+    vx = c * (1 - ax.s) + ax.x * ax.s;
+    vy = s * (1 - ax.s) + ax.y * ax.s;
+  }
+  /* Neutral and far from anything, the two kinds sit together in the
+     middle. Near the stick they slide to opposite ends. */
+  const sep = (2.3 + 2.9 * ax.s) / (Math.hypot(vx, vy) || 1);
+  vx *= sep; vy *= sep;
+  const lx = vx * c + vy * s, ly = -vx * s + vy * c;
+  sign(lx, ly, true, 3.0);
+  sign(-lx, -ly, false, 3.0);
+}
+
+function drawFlows() {
+  for (const fl of flows) {
+    if (fl.t < 0) continue;
+    const u = Math.min(1, fl.t / fl.dur);
+    const bow = Math.sin(Math.PI * u);
+    essence(fl.x0 + (fl.x1 - fl.x0) * u + fl.ax * bow,
+            fl.y0 + (fl.y1 - fl.y0) * u + fl.ay * bow,
+            8, 0.35 + 0.65 * bow);
+  }
+}
+
 function drawFloor() {
   const g = ctx.createLinearGradient(0, FLOOR, 0, FLOOR + 26);
   g.addColorStop(0, 'rgba(0,0,0,0.055)');
@@ -413,17 +595,7 @@ function drawStick() {
 
   ctx.restore();
 
-  if (CFG.charges && sq > 0) {
-    ctx.strokeStyle = '#2b6fd0'; ctx.lineWidth = 2;
-    for (let i = 0; i < 5; i++) {
-      const a = -Math.PI + i * Math.PI / 4;
-      const px = x + Math.cos(a) * 30, py = y + Math.sin(a) * 26;
-      ctx.beginPath();
-      ctx.moveTo(px - 4, py); ctx.lineTo(px + 4, py);
-      ctx.moveTo(px, py - 4); ctx.lineTo(px, py + 4);
-      ctx.stroke();
-    }
-  }
+  if (CFG.charges && sq > 0) drawStickCharge(x, y);
 
   drawPowerButton();
 }
@@ -512,16 +684,7 @@ function drawFlyer(f) {
     ctx.stroke();
   }
 
-  if (CFG.charges && f.q > 0.05) {
-    ctx.strokeStyle = '#2b6fd0'; ctx.lineWidth = 2;
-    for (const t of [0.5, 2.2, 3.9, 5.5]) {
-      const px = A * Math.sin(2 * t) * 1.35, py = B * Math.cos(t) * 1.1;
-      ctx.beginPath();
-      ctx.moveTo(px - 4, py); ctx.lineTo(px + 4, py);
-      ctx.moveTo(px, py - 4); ctx.lineTo(px, py + 4);
-      ctx.stroke();
-    }
-  }
+  drawFlyerCharge(f, A, B, op);
   ctx.restore();
 }
 
@@ -532,6 +695,7 @@ function drawPaper(p) {
   ctx.strokeStyle = '#b4b4b4'; ctx.lineWidth = 1.5;
   roundRect(-9, -6.5, 18, 13, 1.5);
   ctx.fill(); ctx.stroke();
+  drawPaperCharge(p);
   ctx.restore();
 }
 
@@ -710,6 +874,7 @@ function draw() {
   for (const f of flyers) drawFlyer(f);
   drawGlove();
   drawHand();
+  drawFlows();
   drawSparks();
 
   if (CFG.labels) {
@@ -856,13 +1021,18 @@ requestAnimationFrame(loop);
 
   // ── CONFIGURE: one entry per exposed URL param ──────────────────────────
   var CHEAT_DEFS = [
+    {name:'model',    type:'select', values:['none','one','two'],
+                              default:(window.SIM_DEFAULT_MODEL||'none'),
+                                                           desc:'Which picture of charge is drawn on top: none, one red charge stuff, or two kinds'},
     {name:'power',    type:'toggle',                              default:0,   desc:'Stick starts switched on'},
     {name:'flyers',   type:'number', min:0,   max:3,   step:1,    default:2,   desc:'How many flyers'},
     {name:'papers',   type:'number', min:0,   max:14,  step:1,    default:6,   desc:'How many bits of paper'},
     {name:'spoon',    type:'toggle',                              default:1,   desc:'Show the metal spoon'},
     {name:'ruler',    type:'toggle',                              default:1,   desc:'Show the plastic ruler'},
     {name:'labels',   type:'toggle',                              default:1,   desc:'Show the "flyer" / "paper" labels'},
-    {name:'charges',  type:'toggle',                              default:0,   desc:'Show + charge signs'},
+    {name:'charges',  type:'toggle',
+                              default:(window.SIM_DEFAULT_MODEL!=='none')?1:0,
+                                                           desc:'Show the charge marks'},
     {name:'sparks',   type:'toggle',                              default:1,   desc:'Show sparks and crackle'},
     {name:'collapse', type:'toggle',                              default:1,   desc:'Flyer pops open when charged, collapses when not'},
     {name:'resetbtn', type:'toggle',                              default:1,   desc:'Show the start-over arrow'},
