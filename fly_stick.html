@@ -36,8 +36,10 @@ const CFG = {
   charges:  bool('charges', false),
   nflyers:  clampi(num('flyers', 2), 0, 3),
   npapers:  clampi(num('papers', 6), 0, 14),
-  hand:     bool('hand',   true),
-  glove:    bool('glove',  true),
+  /* the metal spoon grounds the stick; the plastic ruler insulates it.
+     the old hand/glove names still work so older links keep running. */
+  hand:     bool('spoon', bool('hand',  true)),
+  glove:    bool('ruler', bool('glove', true)),
   labels:   bool('labels', true),
   sparks:   bool('sparks', true),
   resetbtn: bool('resetbtn', true),
@@ -80,6 +82,11 @@ const WAND_LEN = 240;
 const STICK_Y_MAX = FLOOR + 10;
 const BTN_Y_MAX   = H - 22;
 
+/* ─── the spoon and the ruler, in their own local coordinates ──── */
+const SPOON_BY = -34, SPOON_RX = 15, SPOON_RY = 23;  /* bowl */
+const SPOON_TIP = SPOON_BY - SPOON_RY + 2;           /* the end that touches */
+const RULER_L = 168, RULER_W = 34;
+
 /* ─── physics constants ────────────────────────────────────────── */
 const G    = 700 * CFG.gravity;
 const KREP = 8.5e6 * CFG.strength;   // like charges push apart
@@ -101,8 +108,8 @@ function reset() {
   for (let i = 0; i < CFG.npapers; i++)
     papers.push({ x: 600 + i * 26, y: FLOOR - 5, vx: 0, vy: 0,
                   rot: (i * 1.7) % 1.4 - 0.7, stuck: null, held: false });
-  hand  = { x: 835, y: 330 };
-  glove = { x: 800, y: 450, worn: false };
+  hand  = { x: 835, y: 330 };          /* the spoon */
+  glove = { x: 782, y: 462, worn: false };  /* the plastic ruler */
   sparks = [];
   drag = null; hover = null;
 }
@@ -140,13 +147,14 @@ function addSpark(x, y, n) {
   sparks.push({ x: x, y: y, segs: segs, life: 0.22, t: 0.22 });
 }
 
-/* the bare hand lets charge run away to ground; a gloved hand does not */
+/* the bare spoon lets charge run away to ground; resting on the
+   plastic ruler, it does not */
 function handTouch() {
   if (!CFG.hand || glove.worn) return null;
-  return { x: hand.x - 6.5, y: hand.y - 52 };
+  return { x: hand.x, y: hand.y + SPOON_TIP };
 }
 
-/* the whole wand is live, so a hand anywhere along it drains the charge */
+/* the whole wand is live, so the spoon anywhere along it drains the charge */
 function handOnWand() {
   const ht = handTouch();
   if (!ht) return null;
@@ -172,7 +180,7 @@ function step(dt) {
 
   if (glove.worn) { glove.x = hand.x; glove.y = hand.y; }
 
-  /* hand shorting out the stick */
+  /* spoon shorting out the stick */
   if (stick.on && sq === 0 && onWand && drainCd === 0) {
     addSpark(onWand.x, onWand.y, 3); drainCd = 0.28;
   }
@@ -199,7 +207,7 @@ function step(dt) {
     const dx = f.x - stick.x, dy = f.y - stick.y;
     let r = Math.hypot(dx, dy) || 1;
 
-    /* bare hand drains a charged flyer */
+    /* the bare spoon drains a charged flyer */
     if (ht && f.q > 0.02 && Math.hypot(ht.x - f.x, ht.y - f.y) < f.r * 0.85 + 12) {
       f.q = 0; addSpark(ht.x, ht.y, 3);
     }
@@ -527,52 +535,126 @@ function drawPaper(p) {
   ctx.restore();
 }
 
-function handShape(gloved) {
-  const parts = [
-    [-19, -4, -19, -46, 5.5],
-    [-6.5, -4, -6.5, -52, 5.5],
-    [6, -4, 6, -48, 5.5],
-    [18, -4, 18, -40, 5],
-    [-23, 12, -43, -6, 6.5]
-  ];
-  const skin = gloved ? '#ffd24d' : '#f2c9a0';
-  const edge = gloved ? '#c99a00' : '#cf9f78';
-  const pass = (extra, col) => {
-    ctx.strokeStyle = col; ctx.fillStyle = col;
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    for (const f of parts) {
-      ctx.lineWidth = f[4] * 2 + extra;
-      ctx.beginPath(); ctx.moveTo(f[0], f[1]); ctx.lineTo(f[2], f[3]); ctx.stroke();
-    }
-    roundRect(-27, -14, 54, 72, 13);
-    ctx.fill();
-    if (extra > 0) { ctx.lineWidth = extra; ctx.stroke(); }
-  };
-  pass(3.5, edge);
-  pass(0, skin);
-  if (gloved) {
-    ctx.fillStyle = '#eec000'; ctx.strokeStyle = edge; ctx.lineWidth = 2.5;
-    roundRect(-31, 38, 62, 26, 8);
-    ctx.fill(); ctx.stroke();
+/* a metal spoon, bowl up. metal conducts, so the bare spoon carries
+   charge away the moment it touches something. */
+function spoonShape() {
+  const BY = SPOON_BY, RX = SPOON_RX, RY = SPOON_RY;
+
+  function metal(x0, x1) {
+    const g = ctx.createLinearGradient(x0, 0, x1, 0);
+    g.addColorStop(0.00, '#a9b6c0');
+    g.addColorStop(0.18, '#ffffff');
+    g.addColorStop(0.42, '#c3cdd5');
+    g.addColorStop(0.64, '#f5f8fa');
+    g.addColorStop(0.86, '#9fadb8');
+    g.addColorStop(1.00, '#d6dee4');
+    return g;
   }
+
+  ctx.save();
+  ctx.lineJoin = 'round';
+
+  /* handle, with a slight waist just under the bowl */
+  ctx.beginPath();
+  ctx.moveTo(-4.6, BY + RY - 5);
+  ctx.bezierCurveTo(-7.2, 6, -9.2, 34, -8.2, 57);
+  ctx.quadraticCurveTo(0, 66, 8.2, 57);
+  ctx.bezierCurveTo(9.2, 34, 7.2, 6, 4.6, BY + RY - 5);
+  ctx.closePath();
+  ctx.fillStyle = metal(-9.5, 9.5); ctx.fill();
+  ctx.strokeStyle = '#7d8c98'; ctx.lineWidth = 1.2; ctx.stroke();
+
+  /* bowl */
+  ctx.beginPath();
+  ctx.ellipse(0, BY, RX, RY, 0, 0, 7);
+  ctx.fillStyle = metal(-RX, RX); ctx.fill();
+  ctx.strokeStyle = '#7d8c98'; ctx.lineWidth = 1.2; ctx.stroke();
+
+  /* the hollow */
+  const hg = ctx.createRadialGradient(-3.5, BY - 6, 2, 0, BY, RX);
+  hg.addColorStop(0.00, '#ffffff');
+  hg.addColorStop(0.55, '#ccd7de');
+  hg.addColorStop(1.00, '#93a2ad');
+  ctx.beginPath();
+  ctx.ellipse(0, BY, RX - 3.6, RY - 4, 0, 0, 7);
+  ctx.fillStyle = hg; ctx.fill();
+  ctx.strokeStyle = 'rgba(120,140,155,0.55)'; ctx.lineWidth = 1; ctx.stroke();
+
+  /* glints */
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.beginPath(); ctx.ellipse(-5, BY - 8, 3.6, 6.5, -0.4, 0, 7); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.45)';
+  roundRect(-3.8, 2, 2.6, 48, 1.3); ctx.fill();
+
+  ctx.restore();
+}
+
+/* a clear plastic ruler. plastic doesn't conduct, so a spoon resting on
+   it can't drain the stick. */
+function rulerShape() {
+  const L = RULER_L, D = RULER_W;
+  ctx.save();
+
+  ctx.fillStyle = 'rgba(126,206,236,0.55)';
+  ctx.strokeStyle = 'rgba(38,118,150,0.7)'; ctx.lineWidth = 1.6;
+  roundRect(-L / 2, -D / 2, L, D, 5);
+  ctx.fill(); ctx.stroke();
+
+  /* the bevelled reading edge */
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  roundRect(-L / 2 + 3.5, -D / 2 + 3, L - 7, 5, 2.5); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  roundRect(-L / 2 + 3.5, -D / 2 + 10, L - 7, 7, 3); ctx.fill();
+
+  /* ticks */
+  ctx.strokeStyle = 'rgba(24,66,92,0.8)'; ctx.lineWidth = 1.1;
+  ctx.lineCap = 'butt';
+  for (let i = 0; i <= 30; i++) {
+    const x = -L / 2 + 10 + i * (L - 20) / 30;
+    const long = (i % 5 === 0);
+    ctx.beginPath();
+    ctx.moveTo(x, D / 2 - 2.5);
+    ctx.lineTo(x, D / 2 - (long ? 11 : 6));
+    ctx.stroke();
+  }
+  ctx.fillStyle = 'rgba(20,58,82,0.9)';
+  ctx.font = 'bold 8px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (let i = 1; i <= 5; i++) {
+    const x = -L / 2 + 10 + i * 5 * (L - 20) / 30;
+    ctx.fillText(String(i * 5), x, D / 2 - 15.5);
+  }
+  ctx.font = 'bold 8px Arial';
+  ctx.fillText('cm', -L / 2 + 10, D / 2 - 15.5);
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+
+  /* hanging hole at the far end */
+  ctx.beginPath(); ctx.arc(L / 2 - 9, -D / 2 + 9, 3.2, 0, 7);
+  ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.fill();
+  ctx.strokeStyle = 'rgba(38,118,150,0.6)'; ctx.lineWidth = 1; ctx.stroke();
+
+  ctx.restore();
 }
 
 function drawHand() {
   if (!CFG.hand) return;
-  ctx.save(); ctx.translate(hand.x, hand.y);
-  handShape(false);
-  ctx.restore();
-  if (glove.worn) {
-    ctx.save(); ctx.translate(glove.x, glove.y + 4); ctx.scale(1.13, 1.13);
-    handShape(true);
+  /* when the ruler is picked up, the spoon sits on it */
+  if (glove.worn && CFG.glove) {
+    ctx.save();
+    ctx.translate(glove.x, glove.y + 12);
+    ctx.rotate(Math.PI / 2);
+    rulerShape();
     ctx.restore();
   }
+  ctx.save(); ctx.translate(hand.x, hand.y);
+  spoonShape();
+  ctx.restore();
 }
 
 function drawGlove() {
   if (!CFG.glove || glove.worn) return;
-  ctx.save(); ctx.translate(glove.x, glove.y); ctx.rotate(-0.32);
-  handShape(true);
+  ctx.save(); ctx.translate(glove.x, glove.y); ctx.rotate(-0.09);
+  rulerShape();
   ctx.restore();
 }
 
@@ -652,9 +734,15 @@ function hitTest(x, y) {
   const b = btnPos();
   if (Math.hypot(x - b.x, y - b.y) < 15)
     return { type: 'power' };
-  if (CFG.glove && Math.hypot(x - glove.x, y - glove.y) < (glove.worn ? 34 : 46))
-    return { type: 'glove' };
-  if (CFG.hand && Math.hypot(x - hand.x, y - hand.y) < 48)
+  if (CFG.glove) {
+    if (glove.worn) {
+      if (Math.hypot(x - glove.x, y - glove.y) < 34) return { type: 'glove' };
+    } else if (Math.abs(x - glove.x) < RULER_L / 2 + 4 &&
+               Math.abs(y - glove.y) < RULER_W / 2 + 8) {
+      return { type: 'glove' };
+    }
+  }
+  if (CFG.hand && Math.abs(x - hand.x) < 26 && y > hand.y - 62 && y < hand.y + 70)
     return { type: 'hand' };
   for (let i = flyers.length - 1; i >= 0; i--)
     if (Math.hypot(x - flyers[i].x, y - flyers[i].y) < flyers[i].r + 6)
@@ -704,7 +792,7 @@ function move(x, y) {
     hand.x = Math.max(50, Math.min(W - 50, nx));
     hand.y = Math.max(70, Math.min(H - 40, ny));
   } else if (drag.type === 'glove') {
-    glove.x = Math.max(50, Math.min(W - 50, nx));
+    glove.x = Math.max(RULER_L / 2 + 10, Math.min(W - RULER_L / 2 - 10, nx));
     glove.y = Math.max(70, Math.min(H - 40, ny));
   } else {
     const o = drag.o;
@@ -771,8 +859,8 @@ requestAnimationFrame(loop);
     {name:'power',    type:'toggle',                              default:0,   desc:'Stick starts switched on'},
     {name:'flyers',   type:'number', min:0,   max:3,   step:1,    default:2,   desc:'How many flyers'},
     {name:'papers',   type:'number', min:0,   max:14,  step:1,    default:6,   desc:'How many bits of paper'},
-    {name:'hand',     type:'toggle',                              default:1,   desc:'Show the hand'},
-    {name:'glove',    type:'toggle',                              default:1,   desc:'Show the rubber glove'},
+    {name:'spoon',    type:'toggle',                              default:1,   desc:'Show the metal spoon'},
+    {name:'ruler',    type:'toggle',                              default:1,   desc:'Show the plastic ruler'},
     {name:'labels',   type:'toggle',                              default:1,   desc:'Show the "flyer" / "paper" labels'},
     {name:'charges',  type:'toggle',                              default:0,   desc:'Show + charge signs'},
     {name:'sparks',   type:'toggle',                              default:1,   desc:'Show sparks and crackle'},
