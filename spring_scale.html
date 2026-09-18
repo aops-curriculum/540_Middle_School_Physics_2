@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=600">
+<title>Spring Scale</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    width: 600px; height: 500px;
+    overflow: hidden; background: #f5f5f0;
+    font-family: Arial, Helvetica, sans-serif;
+  }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="sim" width="600" height="500"></canvas>
+<script>
+var canvas = document.getElementById('sim');
+var ctx    = canvas.getContext('2d');
+
+// ============================================================
+//  CONSTANTS
+// ============================================================
+
+var G         = 9.8;      // m/s^2
+var PX_PER_N  = 2.64;     // 50 N spans 132 px of face
+var N_MAX     = 50;
+
+var SX = 152;             // centre line of the whole instrument
+
+var TUBE_L = 115, TUBE_R = 189, TUBE_T = 40, TUBE_B = 248;
+var WIN_L  = 126, WIN_R  = 178, WIN_T  = 50, WIN_B  = 240;
+var SLOT_L = 117, SLOT_R = 125;
+
+var STRIP_L = 56, STRIP_R = 112, STRIP_T = 72, STRIP_B = 238;
+var FACE_ZERO_Y = 90;
+
+var ANCHOR_Y0 = 58;       // spring anchor when screw offset is zero
+var SPRING_L0 = 32;       // unstretched spring length, px
+var ROD_LEN   = 190;      // pointer down to the seat of the hook
+
+var COILS = 9, COIL_R = 21;
+
+var KNOB_X = SX, KNOB_Y = 27, KNOB_R = 11;
+var SCREW_N_PER_PX = 0.03;   // newtons of zero shift per pixel dragged
+var KNOB_RAD_PER_PX = 0.08;  // knob rotation per pixel dragged
+var SCREW_MIN = -3, SCREW_MAX = 6;
+
+var W_W = 60, W_H = 20, W_GAP = 2;
+
+var BTN = { x: 470, y: 428, w: 100, h: 28 };
+
+// ============================================================
+//  STATE
+// ============================================================
+
+var screwN    = 2.4;   // the built-in zero error, in newtons
+var knobAngle = 0;
+
+var extN = 0;          // current spring extension, expressed in newtons
+var extV = 0;          // its velocity, for the bounce
+
+var weights = [
+  { m: 0.2, tx: 373, ty: 128, hooked: false, order: 0 },
+  { m: 0.5, tx: 513, ty: 128, hooked: false, order: 0 },
+  { m: 1.0, tx: 373, ty: 188, hooked: false, order: 0 },
+  { m: 2.0, tx: 513, ty: 188, hooked: false, order: 0 }
+];
+var orderCounter = 1;
+
+var dragIdx = -1, dragX = 0, dragY = 0, dragOX = 0, dragOY = 0;
+var screwDrag = false, screwLastX = 0;
+
+// ============================================================
+//  SMALL HELPERS
+// ============================================================
+
+function rrect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.arcTo(x + w, y, x + w, y + r, r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+  ctx.lineTo(x + r, y + h);
+  ctx.arcTo(x, y + h, x, y + h - r, r);
+  ctx.lineTo(x, y + r);
+  ctx.arcTo(x, y, x + r, y, r);
+  ctx.closePath();
+}
+
+function stack() {
+  var out = [];
+  for (var i = 0; i < weights.length; i++) {
+    if (weights[i].hooked) out.push(weights[i]);
+  }
+  out.sort(function(a, b) { return a.order - b.order; });
+  return out;
+}
+
+function totalMass() {
+  var s = stack(), m = 0;
+  for (var i = 0; i < s.length; i++) m += s[i].m;
+  return m;
+}
+
+function anchorY()  { return ANCHOR_Y0 + screwN * PX_PER_N; }
+
+function pointerY() {
+  var y = anchorY() + SPRING_L0 + extN * PX_PER_N;
+  return Math.max(WIN_T + 8, Math.min(WIN_B - 4, y));
+}
+
+function seatY() { return pointerY() + ROD_LEN; }
+
+function weightCenter(w) {
+  if (!w.hooked) return { x: w.tx, y: w.ty };
+  var st = stack(), k = 0;
+  for (var i = 0; i < st.length; i++) if (st[i] === w) k = i;
+  return { x: SX, y: seatY() + 2 + k * (W_H + W_GAP) + W_H / 2 };
+}
+
+// ============================================================
+//  DRAWING
+// ============================================================
+
+function draw() {
+  ctx.clearRect(0, 0, 600, 500);
+
+  drawStrip();
+  drawCeiling();
+  drawTube();
+  drawStem();
+  drawSpring(anchorY() + 4, pointerY());
+  drawPointer(pointerY());
+  drawBottomCap();
+  drawHook();
+  drawHangingWeights();
+  drawKnob();
+
+  drawTray();
+  drawInstructions();
+  drawButton();
+
+  if (dragIdx >= 0) {
+    if (inDropZone(dragX, dragY)) drawLandingHint();
+    drawWeightBlock(dragX, dragY, weights[dragIdx].m, true);
+  }
+}
+
+// ---------- printed scale face ----------
+function drawStrip() {
+  ctx.fillStyle = '#fff';
+  rrect(STRIP_L, STRIP_T, STRIP_R - STRIP_L, STRIP_B - STRIP_T, 4);
+  ctx.fill();
+  ctx.strokeStyle = '#ccc';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#888';
+  ctx.font = '10px Arial';
+  ctx.fillText('newtons', (STRIP_L + STRIP_R) / 2, STRIP_T - 6);
+
+  for (var v = 0; v <= N_MAX; v++) {
+    var y = FACE_ZERO_Y + v * PX_PER_N;
+    var len, col, lw;
+    if (v % 10 === 0)     { len = 20; col = '#555'; lw = 1.5; }
+    else if (v % 5 === 0) { len = 13; col = '#777'; lw = 1;   }
+    else                  { len = 7;  col = '#aaa'; lw = 1;   }
+
+    ctx.strokeStyle = col;
+    ctx.lineWidth = lw;
+    ctx.beginPath();
+    ctx.moveTo(STRIP_R - 1, y);
+    ctx.lineTo(STRIP_R - 1 - len, y);
+    ctx.stroke();
+
+    if (v % 10 === 0) {
+      ctx.fillStyle = '#444';
+      ctx.font = 'bold 11px Arial';
+      ctx.textAlign = 'right';
+      ctx.fillText(String(v), STRIP_R - 24, y + 4);
+    }
+  }
+}
+
+// ---------- fixed support above the scale ----------
+function drawCeiling() {
+  ctx.fillStyle = '#6f747c';
+  ctx.fillRect(96, 4, 112, 11);
+  ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  ctx.fillRect(96, 4, 112, 3);
+
+  ctx.fillStyle = '#b0b4ba';
+  ctx.fillRect(122, 15, 8, 24);
+  ctx.fillRect(174, 15, 8, 24);
+}
+
+// ---------- blue barrel, window, slot, top cap ----------
+function drawTube() {
+  var grad = ctx.createLinearGradient(TUBE_L, 0, TUBE_R, 0);
+  grad.addColorStop(0,    '#4a7ec0');
+  grad.addColorStop(0.25, '#3366b0');
+  grad.addColorStop(0.55, '#2c5aa0');
+  grad.addColorStop(1,    '#1a3a70');
+
+  rrect(TUBE_L, TUBE_T, TUBE_R - TUBE_L, TUBE_B - TUBE_T, 5);
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // the groove the pointer arm rides in
+  ctx.fillStyle = '#14285a';
+  rrect(SLOT_L, WIN_T, SLOT_R - SLOT_L, WIN_B - WIN_T, 3);
+  ctx.fill();
+
+  // window onto the spring
+  ctx.fillStyle = '#eceff2';
+  rrect(WIN_L, WIN_T, WIN_R - WIN_L, WIN_B - WIN_T, 3);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // top cap
+  ctx.fillStyle = '#d8dade';
+  rrect(110, 34, 84, 14, 3);
+  ctx.fill();
+  ctx.strokeStyle = '#b3b7bd';
+  ctx.stroke();
+}
+
+function drawBottomCap() {
+  ctx.fillStyle = '#d8dade';
+  rrect(110, TUBE_B - 4, 84, 14, 3);
+  ctx.fill();
+  ctx.strokeStyle = '#b3b7bd';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+// ---------- threaded stem and the nut the spring hangs from ----------
+function drawStem() {
+  var aY = anchorY();
+
+  ctx.fillStyle = '#b8bcc2';
+  ctx.fillRect(SX - 3, 15, 6, aY - 15);
+
+  ctx.strokeStyle = 'rgba(80,85,92,0.45)';
+  ctx.lineWidth = 1;
+  for (var y = 46; y < aY - 5; y += 4) {
+    ctx.beginPath();
+    ctx.moveTo(SX - 3, y);
+    ctx.lineTo(SX + 3, y + 2);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = '#c4c8cd';
+  rrect(SX - 11, aY - 4, 22, 8, 2);
+  ctx.fill();
+  ctx.strokeStyle = '#8f949c';
+  ctx.stroke();
+}
+
+// ---------- the spring itself ----------
+function drawSpring(topY, botY) {
+  var len = botY - topY;
+  if (len < 4) len = 4;
+  var N = 260, i, t, x, y;
+
+  ctx.lineJoin = 'round';
+  ctx.lineCap  = 'round';
+
+  ctx.strokeStyle = '#868e99';
+  ctx.lineWidth = 2.6;
+  ctx.beginPath();
+  for (i = 0; i <= N; i++) {
+    t = i / N;
+    x = SX + COIL_R * Math.sin(2 * Math.PI * COILS * t);
+    y = topY + t * len;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (i = 0; i <= N; i++) {
+    t = i / N;
+    x = SX + COIL_R * Math.sin(2 * Math.PI * COILS * t);
+    y = topY + t * len - 0.9;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+// ---------- pointer ----------
+function drawPointer(py) {
+  ctx.fillStyle = '#c4c8cd';
+  rrect(SX - 9, py - 4.5, 18, 9, 2);
+  ctx.fill();
+  ctx.strokeStyle = '#8f949c';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.strokeStyle = '#cc2222';
+  ctx.lineWidth = 3;
+  ctx.lineCap = 'butt';
+  ctx.beginPath();
+  ctx.moveTo(SX - 6, py);
+  ctx.lineTo(124, py);
+  ctx.stroke();
+
+  ctx.fillStyle = '#cc2222';
+  ctx.beginPath();
+  ctx.moveTo(110, py);
+  ctx.lineTo(124, py - 5);
+  ctx.lineTo(124, py + 5);
+  ctx.closePath();
+  ctx.fill();
+}
+
+// ---------- rod and hook below the barrel ----------
+function drawHook() {
+  var py = pointerY();
+  var s  = seatY();
+
+  ctx.fillStyle = '#b0b4ba';
+  ctx.fillRect(SX - 3, py, 6, (s - 22) - py);
+
+  ctx.strokeStyle = '#9aa0a8';
+  ctx.lineWidth = 4;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.arc(SX, s - 11, 11, 0.2 * Math.PI, 1.8 * Math.PI);
+  ctx.stroke();
+}
+
+// ---------- one mass block ----------
+function drawWeightBlock(cx, cy, m, lifted) {
+  var x = cx - W_W / 2, y = cy - W_H / 2;
+
+  if (lifted) {
+    ctx.fillStyle = 'rgba(0,0,0,0.12)';
+    rrect(x + 3, y + 4, W_W, W_H, 3);
+    ctx.fill();
+  }
+
+  // little tab on top, so it reads as a slotted mass
+  ctx.fillStyle = '#9aa0a8';
+  rrect(cx - 4, y - 4, 8, 6, 1.5);
+  ctx.fill();
+
+  var g = ctx.createLinearGradient(x, 0, x + W_W, 0);
+  g.addColorStop(0,    '#9ba2ab');
+  g.addColorStop(0.25, '#7e8691');
+  g.addColorStop(0.6,  '#6b737e');
+  g.addColorStop(1,    '#4e555f');
+
+  rrect(x, y, W_W, W_H, 3);
+  ctx.fillStyle = g;
+  ctx.fill();
+
+  ctx.fillStyle = 'rgba(255,255,255,0.14)';
+  ctx.fillRect(x + 4, y + 1.5, W_W - 8, 3);
+
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 11px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText(m.toFixed(1) + ' kg', cx, cy + 4);
+}
+
+function drawHangingWeights() {
+  var st = stack(), s = seatY();
+  for (var i = 0; i < st.length; i++) {
+    drawWeightBlock(SX, s + 2 + i * (W_H + W_GAP) + W_H / 2, st[i].m, false);
+  }
+}
+
+function drawLandingHint() {
+  var st = stack(), s = seatY();
+  var y = s + 2 + st.length * (W_H + W_GAP);
+  ctx.save();
+  ctx.setLineDash([5, 4]);
+  ctx.strokeStyle = '#8aa6d0';
+  ctx.lineWidth = 1.5;
+  rrect(SX - W_W / 2, y, W_W, W_H, 3);
+  ctx.stroke();
+  ctx.restore();
+}
+
+// ---------- zero-adjust knob ----------
+function drawKnob() {
+  var g = ctx.createLinearGradient(KNOB_X - KNOB_R, 0, KNOB_X + KNOB_R, 0);
+  g.addColorStop(0,    '#f2f3f5');
+  g.addColorStop(0.45, '#cbced4');
+  g.addColorStop(1,    '#8f949c');
+
+  ctx.beginPath();
+  ctx.arc(KNOB_X, KNOB_Y, KNOB_R, 0, Math.PI * 2);
+  ctx.fillStyle = g;
+  ctx.fill();
+  ctx.strokeStyle = '#787d85';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.save();
+  ctx.translate(KNOB_X, KNOB_Y);
+  ctx.rotate(knobAngle);
+  ctx.strokeStyle = 'rgba(60,65,72,0.45)';
+  ctx.lineWidth = 1;
+  for (var i = 0; i < 16; i++) {
+    var a = i * Math.PI / 8;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a) * (KNOB_R - 4), Math.sin(a) * (KNOB_R - 4));
+    ctx.lineTo(Math.cos(a) * (KNOB_R - 0.5), Math.sin(a) * (KNOB_R - 0.5));
+    ctx.stroke();
+  }
+  ctx.strokeStyle = '#cc2222';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, -(KNOB_R - 5));
+  ctx.lineTo(0, -(KNOB_R - 0.5));
+  ctx.stroke();
+  ctx.restore();
+
+  // arrows either side, showing which way the knob slides
+  var ax = KNOB_R + 4;
+  ctx.fillStyle = '#9aa0a8';
+  ctx.beginPath();
+  ctx.moveTo(KNOB_X - ax - 6, KNOB_Y);
+  ctx.lineTo(KNOB_X - ax,     KNOB_Y - 4);
+  ctx.lineTo(KNOB_X - ax,     KNOB_Y + 4);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(KNOB_X + ax + 6, KNOB_Y);
+  ctx.lineTo(KNOB_X + ax,     KNOB_Y - 4);
+  ctx.lineTo(KNOB_X + ax,     KNOB_Y + 4);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = '#888';
+  ctx.font = '11px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText('zero adjust', KNOB_X + ax + 14, KNOB_Y + 4);
+}
+
+// ---------- right-hand panel ----------
+function drawTray() {
+  ctx.fillStyle = '#fff';
+  rrect(300, 60, 286, 185, 4);
+  ctx.fill();
+  ctx.strokeStyle = '#ccc';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.fillStyle = '#555';
+  ctx.font = 'bold 13px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('Slotted masses', 443, 84);
+
+  var dragged = dragIdx >= 0 ? weights[dragIdx] : null;
+  for (var i = 0; i < weights.length; i++) {
+    var w = weights[i];
+    if (w === dragged || w.hooked) continue;
+    drawWeightBlock(w.tx, w.ty, w.m, false);
+  }
+
+  ctx.fillStyle = '#555';
+  ctx.font = 'bold 13px Arial';
+  ctx.fillText('Total hanging mass:  ' + totalMass().toFixed(1) + ' kg', 443, 226);
+}
+
+function drawInstructions() {
+  ctx.fillStyle = '#666';
+  ctx.font = '12px Arial';
+  ctx.textAlign = 'left';
+  var lines = [
+    'Drag the knurled screw left or right until the',
+    'pointer sits exactly on 0 N with nothing hanging.',
+    '',
+    'Then drag masses onto the hook and read the',
+    'force from the pointer. Compare with F = mg,',
+    'taking g = 9.8 m/s\u00B2.'
+  ];
+  for (var i = 0; i < lines.length; i++) {
+    ctx.fillText(lines[i], 300, 282 + i * 18);
+  }
+}
+
+function drawButton() {
+  ctx.fillStyle = '#e8e8e4';
+  rrect(BTN.x, BTN.y, BTN.w, BTN.h, 4);
+  ctx.fill();
+  ctx.strokeStyle = '#bbb';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.fillStyle = '#555';
+  ctx.font = 'bold 13px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('Reset', BTN.x + BTN.w / 2, BTN.y + 19);
+}
+
+// ============================================================
+//  ANIMATION
+// ============================================================
+
+function step() {
+  var target = totalMass() * G;
+  var dt = 1 / 60, k = 140, c = 14;
+
+  var a = -k * (extN - target) - c * extV;
+  extV += a * dt;
+  extN += extV * dt;
+
+  if (extN < -1) { extN = -1; extV = 0; }
+  if (extN > 55) { extN = 55; extV = 0; }
+
+  draw();
+  requestAnimationFrame(step);
+}
+
+// ============================================================
+//  INTERACTION
+// ============================================================
+
+function getPos(e) {
+  var r = canvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - r.left) * 600 / r.width,
+    y: (e.clientY - r.top)  * 500 / r.height
+  };
+}
+
+function hitKnob(x, y) {
+  var dx = x - KNOB_X, dy = y - KNOB_Y;
+  return dx * dx + dy * dy <= (KNOB_R + 5) * (KNOB_R + 5);
+}
+
+function hitWeight(x, y) {
+  for (var i = weights.length - 1; i >= 0; i--) {
+    var c = weightCenter(weights[i]);
+    if (x > c.x - W_W / 2 - 2 && x < c.x + W_W / 2 + 2 &&
+        y > c.y - W_H / 2 - 5 && y < c.y + W_H / 2 + 2) return i;
+  }
+  return -1;
+}
+
+function hitButton(x, y) {
+  return x > BTN.x && x < BTN.x + BTN.w && y > BTN.y && y < BTN.y + BTN.h;
+}
+
+function inDropZone(x, y) {
+  var s = seatY();
+  return x > 90 && x < 230 &&
+         y > s - 70 && y < s + stack().length * (W_H + W_GAP) + 120;
+}
+
+function press(p) {
+  if (hitButton(p.x, p.y)) {
+    for (var i = 0; i < weights.length; i++) weights[i].hooked = false;
+    screwN = 2.4;
+    knobAngle = 0;
+    extV = 0;
+    return;
+  }
+  if (hitKnob(p.x, p.y)) {
+    screwDrag = true;
+    screwLastX = p.x;
+    return;
+  }
+  var idx = hitWeight(p.x, p.y);
+  if (idx >= 0) {
+    var c = weightCenter(weights[idx]);
+    dragIdx = idx;
+    dragOX = p.x - c.x;
+    dragOY = p.y - c.y;
+    dragX = c.x;
+    dragY = c.y;
+    weights[idx].hooked = false;   // lift it off; physics updates at once
+  }
+}
+
+function move(p) {
+  if (screwDrag) {
+    var dx = p.x - screwLastX;
+    screwLastX = p.x;
+    screwN = Math.max(SCREW_MIN, Math.min(SCREW_MAX, screwN + dx * SCREW_N_PER_PX));
+    knobAngle += dx * KNOB_RAD_PER_PX;
+    return;
+  }
+  if (dragIdx >= 0) {
+    dragX = p.x - dragOX;
+    dragY = p.y - dragOY;
+    return;
+  }
+  if (hitKnob(p.x, p.y))            canvas.style.cursor = 'ew-resize';
+  else if (hitWeight(p.x, p.y) >= 0) canvas.style.cursor = 'grab';
+  else if (hitButton(p.x, p.y))      canvas.style.cursor = 'pointer';
+  else                               canvas.style.cursor = 'default';
+}
+
+function release() {
+  if (dragIdx >= 0) {
+    if (inDropZone(dragX, dragY)) {
+      weights[dragIdx].hooked = true;
+      weights[dragIdx].order = orderCounter++;
+    }
+    dragIdx = -1;
+  }
+  screwDrag = false;
+}
+
+canvas.addEventListener('mousedown', function(e) {
+  press(getPos(e));
+  if (dragIdx >= 0 || screwDrag) canvas.style.cursor = 'grabbing';
+});
+canvas.addEventListener('mousemove', function(e) { move(getPos(e)); });
+canvas.addEventListener('mouseup',    function() { release(); canvas.style.cursor = 'default'; });
+canvas.addEventListener('mouseleave', function() { release(); });
+
+canvas.addEventListener('touchstart', function(e) {
+  e.preventDefault();
+  press(getPos(e.touches[0]));
+}, { passive: false });
+canvas.addEventListener('touchmove', function(e) {
+  e.preventDefault();
+  move(getPos(e.touches[0]));
+}, { passive: false });
+canvas.addEventListener('touchend', function(e) {
+  e.preventDefault();
+  release();
+}, { passive: false });
+
+step();
+</script>
+</body>
+</html>

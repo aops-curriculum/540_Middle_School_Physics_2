@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=600, initial-scale=1">
+<title>Equal times, unequal distances</title>
+<style>
+  :root{
+    --paper:#EDF1F4;
+    --ink:#1B2733;
+    --ink-soft:#5D6E7C;
+    --rule:#C3CCD3;
+    --teal:#14666B;
+  }
+  *{ box-sizing:border-box; }
+  /* height:100% rather than a fixed pixel height, so the paper colour
+     fills whatever the iframe gives us and the content sits at the top. */
+  html,body{ margin:0; padding:0; height:100%; }
+  html{ background:var(--paper); }
+  body{
+    width:600px; overflow:hidden;
+    background:var(--paper); color:var(--ink);
+    font:15px/1.45 Palatino,"Palatino Linotype","Book Antiqua",Georgia,serif;
+    display:flex; flex-direction:column; padding:13px 14px;
+  }
+
+  /* One row: buttons first, then the live numbers. */
+  .controls{ display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:0 0 7px; }
+  .meta{ font-size:12.5px; color:var(--ink-soft); white-space:nowrap; }
+  .meta:first-of-type{ margin-left:6px; }
+  .num{
+    font:600 15px/1 ui-monospace,"SFMono-Regular",Consolas,monospace;
+    color:var(--teal); font-variant-numeric:tabular-nums;
+  }
+
+  /* The stage wrapper gives the tilt slider something to be positioned
+     against. Its CSS pixels line up 1:1 with canvas coordinates, so the
+     slider's "top" is a canvas y value. */
+  .stage{ position:relative; }
+  canvas{
+    display:block; width:100%;
+    border-top:1px solid var(--rule); border-bottom:1px solid var(--rule);
+  }
+  .tilt{
+    position:absolute; left:2px;
+    display:flex; flex-direction:column; align-items:center; gap:3px;
+  }
+  .tilt output{
+    font:12px/1 Palatino,"Palatino Linotype",Georgia,serif;
+    color:var(--ink-soft); font-variant-numeric:tabular-nums;
+  }
+  .tilt input[type=range]{
+    -webkit-appearance:slider-vertical;   /* older Safari / Chrome */
+    appearance:slider-vertical;
+    writing-mode:vertical-lr;             /* current browsers */
+    direction:rtl;                        /* shallow at the bottom */
+    width:24px; margin:0;
+    accent-color:var(--teal);
+  }
+
+  button{
+    font:600 13px/1 Palatino,"Palatino Linotype",Georgia,serif;
+    padding:7px 15px; border:1px solid var(--ink); background:transparent;
+    color:var(--ink); border-radius:2px; cursor:pointer;
+  }
+  button:hover:enabled{ background:var(--ink); color:var(--paper); }
+  button:disabled{ opacity:.35; cursor:default; }
+  button:focus-visible, input:focus-visible{ outline:2px solid var(--teal); outline-offset:2px; }
+</style>
+</head>
+<body>
+
+<div class="controls" id="controls"></div>
+<div class="stage" id="stageWrap"><canvas id="stage"></canvas></div>
+
+<script>
+"use strict";
+
+/* ---------------------------------------------------------------
+   Galileo's rolling ball, on a ruled beam.
+
+   The beam carries a plain ruler: 25 equal units, graduated like any
+   measuring stick, with no physics built into the spacing. Five of
+   those graduations -- 1, 4, 9, 16 and 25, the perfect squares -- are
+   picked out in teal. The ball crosses exactly those five at equal
+   time intervals, so the odd-number pattern 1 : 3 : 5 : 7 : 9 can be
+   counted off against a neutral scale rather than assumed by the
+   layout. The slope is adjustable to show the pattern doesn't depend
+   on it. At the foot of the beam the ball rolls out onto level ground
+   and coasts off the edge of the canvas at the speed it earned.
+--------------------------------------------------------------- */
+
+/* --- Physics -------------------------------------------------
+   Solid sphere rolling without slipping down an incline:
+       a = g*sin(theta) / (1 + I/(m r^2)),  I = (2/5) m r^2
+         = (5/7) g sin(theta)
+   Mass and radius cancel out. Position from rest: s = (1/2) a t^2
+------------------------------------------------------------- */
+const G        = 9.81;      // m/s^2
+const ROLL     = 5 / 7;     // solid-sphere rolling factor
+const BEAM_LEN = 7.0;       // metres; Galileo's beam was ~12 braccia
+
+/* --- The scale on the beam -----------------------------------
+   UNITS graduations of L/UNITS each. SQUARES are the ones the ball
+   reaches at equal time steps: s_n = (n/5)^2 * L = n^2 units, so with
+   25 units on the beam they land on 1, 4, 9, 16, 25 exactly. The gaps
+   between consecutive squares are the odd numbers, because
+   n^2 - (n-1)^2 = 2n - 1.
+------------------------------------------------------------- */
+const UNITS      = 25;
+const SQUARES    = [1, 4, 9, 16, 25];
+const SQUARE_SET = new Set(SQUARES);          // fast "is n a square?" test
+
+const MIN_DEG = 4, MAX_DEG = 16;
+
+const accel     = d => ROLL * G * Math.sin(d * Math.PI / 180);
+const totalTime = d => Math.sqrt(2 * BEAM_LEN / accel(d));
+const distance  = (d, t) => Math.min(0.5 * accel(d) * t * t, BEAM_LEN);
+// Exact clock reading when the ball reaches distance s:  t = sqrt(2s/a)
+const timeAt    = (d, s) => Math.sqrt(2 * s / accel(d));
+// Speed at the foot of the beam: v = a*T = sqrt(2aL). On level ground a
+// sphere rolling without slipping has no net force and no torque on it,
+// so it carries this speed away unchanged.
+const exitSpeed = d => accel(d) * totalTime(d);
+
+/* --- Geometry ------------------------------------------------
+   The beam pivots about its LOW end, which is the anchor and never
+   moves; the high end swings up and slightly right as the slope
+   increases. Drawing happens in a frame whose origin is the HIGH end,
+   since that is where the ball starts and where distance is measured
+   from, so we work backwards from the anchor.
+
+   The canvas is sized to the drawing: the headroom above the anchor is
+   what the beam and ball need to swing up to MAX_DEG, and the space
+   below is the two label rows plus the caption.
+------------------------------------------------------------- */
+const CW = 572, CH = 240;
+const ANCHOR   = { x:514, y:156 };
+const BEAM_PX  = 472;
+const UNIT_PX  = BEAM_PX / UNITS;             // 18.88 px per graduation
+const PX_PER_M = BEAM_PX / BEAM_LEN;          // 67.43 px per metre
+const SLIDER_H = 130;
+const BALL_R   = 9;
+
+/* The level run: from the pivot to just past the right edge, far enough
+   that the whole ball has cleared the canvas. */
+const RUNOUT_PX = CW + 2 * BALL_R - ANCHOR.x;
+const runoutTime = d => (RUNOUT_PX / PX_PER_M) / exitSpeed(d);
+const exitTime   = d => totalTime(d) + runoutTime(d);
+
+/* Vertical positions inside the rotated beam frame. y = 0 is the
+   running surface; positive y is downward, into and below the beam. */
+const BEAM_TOP = -6, BEAM_BOT = 12;           // the wooden bar itself
+const TICK_MINOR = 6, TICK_FIVE = 11;         // tick lengths below the bar
+const Y_UNITS = 34;                           // baseline for unit numbers
+const Y_CLOCK = 49;                           // baseline for clock readings
+
+/* --- Canvas --------------------------------------------------
+   Two sizes: the CSS size the reader sees, and the bitmap we draw
+   into. On a retina screen those differ, so the bitmap is enlarged by
+   the device pixel ratio and the context scaled to match. Everything
+   below is then written in plain CW x CH units.
+------------------------------------------------------------- */
+const canvas = document.getElementById("stage");
+const ctx    = canvas.getContext("2d");
+const dpr    = Math.min(window.devicePixelRatio || 1, 3);
+canvas.width  = CW * dpr;
+canvas.height = CH * dpr;
+canvas.style.height = CH + "px";
+ctx.scale(dpr, dpr);
+
+const INK  = "#1B2733";
+const SOFT = "#5D6E7C";
+const RULE = "#C3CCD3";
+const TEAL = "#14666B";
+const TEAL_PALE = "#93B5B7";   // a square the ball has not reached yet
+const WOOD = "#B3A184";
+const WOOD_EDGE = "#7E6E56";
+const BALL = { fill:"#B98A33", edge:"#6E4C1B" };          // bronze
+
+const SERIF = "Palatino, Georgia, serif";
+const MONO  = "ui-monospace, Consolas, monospace";
+
+/* --- State ---------------------------------------------------- */
+let deg       = 8;      // current slope
+let clock     = 0;      // seconds since release
+let running   = false;
+let lastStamp = 0;      // previous animation frame timestamp (ms)
+
+/* --- Drawing -------------------------------------------------- */
+function drawGround() {
+  // The level floor the beam stands on. It runs from a stub left of the
+  // hinge out past the right edge, so the ball has somewhere to go.
+  ctx.strokeStyle = RULE;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(ANCHOR.x - 30, ANCHOR.y + 0.5);
+  ctx.lineTo(CW, ANCHOR.y + 0.5);
+  ctx.stroke();
+
+  // A dot under the fixed low end, so it reads as a hinge.
+  ctx.fillStyle = WOOD_EDGE;
+  ctx.beginPath();
+  ctx.arc(ANCHOR.x, ANCHOR.y, 3, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawBeam() {
+  ctx.fillStyle   = WOOD;
+  ctx.strokeStyle = WOOD_EDGE;
+  ctx.lineWidth   = 1;
+  ctx.beginPath();
+  ctx.rect(0, BEAM_TOP, BEAM_PX, BEAM_BOT - BEAM_TOP);
+  ctx.fill();
+  ctx.stroke();
+
+  // The groove the ball runs in.
+  ctx.strokeStyle = WOOD_EDGE;
+  ctx.lineWidth   = 1.2;
+  ctx.beginPath();
+  ctx.moveTo(0, 0.5);
+  ctx.lineTo(BEAM_PX, 0.5);
+  ctx.stroke();
+}
+
+/* The ruler. Drawn in three passes so the important marks always sit
+   on top of the plain ones: (1) ordinary graduations, (2) the five
+   squares, (3) the type. Everything hangs below the bar, where the
+   ball can never cover it. */
+function drawRuler(s) {
+  const reached = (s / BEAM_LEN) * UNITS + 1e-9;   // position in ruler units
+
+  // 1. Ordinary graduations, every unit, with a longer tick each five.
+  ctx.strokeStyle = RULE;
+  ctx.lineWidth   = 1;
+  ctx.beginPath();
+  for (let n = 0; n <= UNITS; n++) {
+    if (SQUARE_SET.has(n)) continue;               // drawn in pass 2 instead
+    const x = n * UNIT_PX;
+    ctx.moveTo(x, BEAM_BOT);
+    ctx.lineTo(x, BEAM_BOT + (n % 5 === 0 ? TICK_FIVE : TICK_MINOR));
+  }
+  ctx.stroke();                                    // one stroke for all of them
+
+  // 2. The five equal-time marks, scribed right across the bar.
+  for (const n of SQUARES) {
+    const lit = reached >= n;
+    const x   = n * UNIT_PX;
+    ctx.strokeStyle = lit ? TEAL : TEAL_PALE;
+    ctx.lineWidth   = lit ? 2.2 : 1.4;
+    ctx.beginPath();
+    ctx.moveTo(x, BEAM_TOP - 4);
+    ctx.lineTo(x, BEAM_BOT + TICK_FIVE + 4);
+    ctx.stroke();
+  }
+
+  // 3a. Unit numbers under the ruler: every fifth graduation, in grey,
+  //     with the end of the scale in ink so the beam's length reads as
+  //     25 units. The teal marks are left unlabelled -- their positions
+  //     are read off the scale by counting.
+  ctx.textAlign = "center";
+  ctx.font      = "11px " + SERIF;
+  for (let n = 0; n <= UNITS; n += 5) {
+    ctx.fillStyle = n === UNITS ? INK : SOFT;
+    ctx.fillText(String(n), n * UNIT_PX, Y_UNITS);
+  }
+
+  // 3b. The clock reading at each teal mark, revealed as the ball passes.
+  ctx.fillStyle = TEAL;
+  ctx.font      = "600 11px " + MONO;
+  for (const n of SQUARES) {
+    if (reached >= n) {
+      ctx.fillText(timeAt(deg, n / UNITS * BEAM_LEN).toFixed(2), n * UNIT_PX, Y_CLOCK);
+    }
+  }
+}
+
+/* Draws the ball at (cx, cy) with its painted radius turned to `spin`
+   radians. Both the beam and the floor use it: on the beam it is called
+   inside the rotated frame, on the floor in plain canvas coordinates. */
+function drawBall(cx, cy, spin) {
+  const r = BALL_R;
+  ctx.fillStyle   = BALL.fill;
+  ctx.strokeStyle = BALL.edge;
+  ctx.lineWidth   = 1;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  // A painted radius, so rolling is visible rather than sliding.
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(cx + r * 0.85 * Math.cos(spin), cy + r * 0.85 * Math.sin(spin));
+  ctx.stroke();
+}
+
+function drawCaptions() {
+  // The pivot is fixed, so the caption can be too.
+  ctx.textAlign = "left";
+  ctx.fillStyle = SOFT;
+  ctx.font = "11.5px " + SERIF;
+  ctx.fillText("the number under each teal mark is the clock reading, in seconds, as the ball passes it",
+               60, ANCHOR.y + 72);
+}
+
+function render() {
+  ctx.clearRect(0, 0, CW, CH);
+
+  const th    = deg * Math.PI / 180;
+  const x0    = ANCHOR.x - BEAM_PX * Math.cos(th);   // high end
+  const y0    = ANCHOR.y - BEAM_PX * Math.sin(th);
+  const tRamp = totalTime(deg);
+  const onBeam = clock <= tRamp;
+
+  const t   = Math.min(clock, tRamp);
+  const s   = distance(deg, t);
+  const sPx = (s / BEAM_LEN) * BEAM_PX;
+
+  // Rolling without slipping means arc length = distance travelled, so
+  // the turn angle is always (distance rolled in px) / (radius in px).
+  // On the beam that angle is measured from the beam frame; on the floor
+  // the frame is upright, so the slope has to be added back in to keep
+  // the painted radius from jumping at the foot of the ramp.
+
+  drawGround();
+
+  // Inside this block, +x runs down the beam and +y is into it, so no
+  // tick, label or ball needs its own trigonometry.
+  ctx.save();
+  ctx.translate(x0, y0);
+  ctx.rotate(th);
+  drawBeam();
+  drawRuler(s);
+  if (onBeam) drawBall(sPx, -BALL_R, sPx / BALL_R);
+  ctx.restore();
+
+  if (!onBeam) {
+    const flatPx = exitSpeed(deg) * (clock - tRamp) * PX_PER_M;
+    drawBall(ANCHOR.x + flatPx, ANCHOR.y - BALL_R,
+             th + (BEAM_PX + flatPx) / BALL_R);
+  }
+
+  drawCaptions();
+}
+
+/* --- Animation -----------------------------------------------
+   requestAnimationFrame hands us a timestamp in milliseconds. We
+   advance our own clock by the real elapsed time, so the run takes as
+   long as the physics says on any monitor. The 0.05 s cap stops the
+   ball teleporting to the bottom if the tab is backgrounded.
+------------------------------------------------------------- */
+function frame(stamp) {
+  if (!running) return;
+  if (!lastStamp) lastStamp = stamp;
+  const dt = Math.min((stamp - lastStamp) / 1000, 0.05);
+  lastStamp = stamp;
+  clock += dt;
+
+  const done = exitTime(deg);
+  if (clock >= done) {
+    clock = done;
+    running = false;
+    rollBtn.disabled = false;
+  }
+
+  render();
+  updateReadouts();
+  if (running) requestAnimationFrame(frame);
+}
+
+function release() {
+  if (running) return;
+  clock = 0;
+  lastStamp = 0;
+  running = true;
+  rollBtn.disabled = true;
+  requestAnimationFrame(frame);
+}
+
+function reset() {
+  running = false;
+  clock = 0;
+  lastStamp = 0;
+  rollBtn.disabled = false;
+  render();
+  updateReadouts();
+}
+
+/* --- Controls ------------------------------------------------- */
+const controls  = document.getElementById("controls");
+const stageWrap = document.getElementById("stageWrap");
+
+const rollBtn = document.createElement("button");
+rollBtn.textContent = "Release";
+rollBtn.addEventListener("click", release);
+
+const resetBtn = document.createElement("button");
+resetBtn.textContent = "Reset";
+resetBtn.addEventListener("click", reset);
+
+controls.append(rollBtn, resetBtn);
+
+function addMeta(label, id, suffix) {
+  const span = document.createElement("span");
+  span.className = "meta";
+  span.append(label + " ");
+  const num = document.createElement("span");
+  num.className = "num";
+  num.id = id;
+  num.textContent = "0.00";
+  span.append(num, " " + suffix);
+  controls.append(span);
+}
+
+addMeta("clock", "clock", "s");
+addMeta("distance", "dist", "m");
+const clockEl = document.getElementById("clock");
+const distEl  = document.getElementById("dist");
+
+/* The vertical slider stands to the left of the beam with its bottom
+   lined up on the pivot, so pushing the handle up raises the far end
+   of the beam. Moving it clears any run in progress, since tilting the
+   beam under a ball already rolling isn't a meaningful experiment. */
+const tiltBox   = document.createElement("div");
+const tiltRange = document.createElement("input");
+const tiltOut   = document.createElement("output");
+
+tiltBox.className = "tilt";
+tiltBox.style.top = (ANCHOR.y - SLIDER_H) + "px";
+
+tiltRange.type  = "range";
+tiltRange.min   = String(MIN_DEG);
+tiltRange.max   = String(MAX_DEG);
+tiltRange.step  = "1";
+tiltRange.value = String(deg);
+tiltRange.style.height = SLIDER_H + "px";
+tiltRange.setAttribute("aria-label", "Beam angle in degrees");
+tiltRange.addEventListener("input", () => {
+  deg = Number(tiltRange.value);
+  tiltOut.textContent = deg + "\u00B0";
+  reset();
+});
+
+tiltOut.textContent = deg + "\u00B0";
+tiltBox.append(tiltRange, tiltOut);
+stageWrap.append(tiltBox);
+
+function updateReadouts() {
+  const t = Math.min(clock, totalTime(deg));
+  const s = distance(deg, t);
+  clockEl.textContent = t.toFixed(2);
+  distEl.textContent  = s.toFixed(2);
+}
+
+reset();
+</script>
+</body>
+</html>
