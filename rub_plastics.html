@@ -41,8 +41,8 @@ const bool = (k, d) => Q.has(k) ? Q.get(k) !== '0' : d;
 
 const CFG = {
   stick:    bool('stick', false),
-  power:    bool('power', false),
-  sponge:   bool('sponge', true),
+  /* the stick is here to be used, so it starts switched on */
+  power:    bool('power', true),
   labels:   bool('labels', true),
   /* off by default: working out the signs without being told is the
      whole point of these two sims */
@@ -95,9 +95,9 @@ const SLAB_W = 96, SLAB_H = 64, SLAB_R = 46;
    together and the one lower on the list comes away negative. */
 const SERIES = { PVC: 0, PET: 1, PA: 2 };
 const KINDS = [
-  { id: 'PVC', x: 250, y: 250, color: '#7fb069' },
-  { id: 'PET', x: 430, y: 250, color: '#e0a458' },
-  { id: 'PA',  x: 610, y: 250, color: '#8e7cc3' }
+  { id: 'PVC', x: 180, y: 250, color: '#7fb069' },
+  { id: 'PET', x: 350, y: 250, color: '#e0a458' },
+  { id: 'PA',  x: 520, y: 250, color: '#8e7cc3' }
 ];
 
 /* ─── physics constants ────────────────────────────────────────── */
@@ -109,7 +109,7 @@ const A_MAX = 2400;
 const STICK_Q = -1.6;
 
 /* ─── state ────────────────────────────────────────────────────── */
-let slabs, stick, sponge, sparks, rub, rubbed, hover, drag, prev;
+let slabs, stick, sparks, rub, hover, drag, prev;
 
 function reset() {
   slabs = KINDS.map(k => ({
@@ -117,11 +117,11 @@ function reset() {
     x: k.x, y: k.y, vx: 0, vy: 0, q: 0, r: SLAB_R,
     hx: SLAB_W / 2 + 4, hy: SLAB_H / 2 + 4, held: false
   }));
-  stick = { x: 790, y: 140, on: CFG.power };
-  sponge = { x: 132, y: FLOOR - 26 };
+  /* The stick starts switched on, and it starts far enough from the
+     plastics that a neutral one doesn't creep over to it on its own. */
+  stick = { x: 810, y: 140, on: CFG.power };
   sparks = [];
   rub = null;
-  rubbed = false;
   drag = null; hover = null;
 }
 
@@ -180,7 +180,6 @@ function doRub(a, b) {
   const lower = SERIES[a.id] < SERIES[b.id] ? a : b;
   const upper = lower === a ? b : a;
   lower.q = -1; upper.q = 1;
-  rubbed = true;
   const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
   addSpark(mx, my, 4);
   /* push them apart a little so you can see them react right away */
@@ -242,19 +241,6 @@ function step(dt) {
       if (rel < 0) {
         a.vx += ux * rel / 2; a.vy += uy * rel / 2;
         b.vx -= ux * rel / 2; b.vy -= uy * rel / 2;
-      }
-    }
-  }
-
-  /* Water conducts, so a damp sponge wiped over a plastic carries the
-     charge off it. Nothing else here can. */
-  if (CFG.sponge) {
-    for (const s of slabs) {
-      if (!s.q) continue;
-      if (Math.abs(sponge.x - s.x) < SLAB_W / 2 + 26 &&
-          Math.abs(sponge.y - s.y) < SLAB_H / 2 + 20) {
-        s.q = 0;
-        addSpark(sponge.x, sponge.y, 2);
       }
     }
   }
@@ -484,56 +470,6 @@ function drawScuff() {
   ctx.restore();
 }
 
-/* A damp sponge. Wipe a plastic with it and the charge goes. */
-function drawSponge() {
-  if (!CFG.sponge) return;
-  const hot = hover === 'sponge';
-  const w = 78, h = 46;
-  ctx.save();
-  ctx.translate(sponge.x, sponge.y);
-
-  ctx.fillStyle = 'rgba(0,0,0,0.11)';
-  ctx.beginPath(); ctx.ellipse(3, h / 2 + 3, w / 2 - 2, 6, 0, 0, 7); ctx.fill();
-
-  /* the yellow block */
-  const g = ctx.createLinearGradient(0, -h / 2, 0, h / 2);
-  g.addColorStop(0, '#fbe79a');
-  g.addColorStop(1, '#e8c95c');
-  ctx.fillStyle = g;
-  ctx.strokeStyle = hot ? '#8f7a2c' : '#bfa445'; ctx.lineWidth = 1.5;
-  roundRect(-w / 2, -h / 2, w, h, 7);
-  ctx.fill(); ctx.stroke();
-
-  /* the green scrubbing side on top */
-  ctx.save();
-  roundRect(-w / 2, -h / 2, w, h, 7); ctx.clip();
-  const g2 = ctx.createLinearGradient(0, -h / 2, 0, -h / 2 + 17);
-  g2.addColorStop(0, '#6fa85e');
-  g2.addColorStop(1, '#4e8a45');
-  ctx.fillStyle = g2;
-  ctx.fillRect(-w / 2, -h / 2, w, 17);
-  ctx.restore();
-
-  /* pores */
-  ctx.fillStyle = 'rgba(160,135,55,0.35)';
-  let sd = 4133;
-  const rnd = () => (sd = (sd * 9301 + 49297) % 233280) / 233280;
-  for (let i = 0; i < 26; i++) {
-    const px = (rnd() - 0.5) * (w - 14);
-    const py = -h / 2 + 22 + rnd() * (h - 28);
-    ctx.beginPath(); ctx.ellipse(px, py, 1.4 + rnd() * 2.2, 1.1 + rnd() * 1.6, rnd(), 0, 7);
-    ctx.fill();
-  }
-
-  /* a wet sheen */
-  ctx.fillStyle = 'rgba(255,255,255,0.4)';
-  roundRect(-w / 2 + 7, -h / 2 + 20, w - 14, 4, 2); ctx.fill();
-
-  ctx.restore();
-
-  if (CFG.labels) caption('damp sponge', sponge.x, FLOOR + 22, hot);
-}
-
 function drawSparks() {
   for (const s of sparks) {
     const a = Math.max(0, s.life / s.t);
@@ -592,13 +528,10 @@ function draw() {
   drawStick();
   drawScuff();
   for (const s of slabs) drawSlab(s);
-  drawSponge();
   drawSparks();
 
   if (CFG.labels) {
-    caption(rubbed ? 'the damp sponge takes the charge back off'
-                   : 'drag one plastic across another to rub them',
-            W / 2, 52, false);
+    caption('drag one plastic across another to rub them', W / 2, 52, false);
     if (CFG.stick)
       label('this charge is negative', stick.x, Math.min(H - 6, stick.y + WAND_LEN + 26));
   }
@@ -621,8 +554,6 @@ function hitTest(x, y) {
     const b = btnPos();
     if (Math.hypot(x - b.x, y - b.y) < 15) return { type: 'power' };
   }
-  if (CFG.sponge && Math.abs(x - sponge.x) < 44 && Math.abs(y - sponge.y) < 28)
-    return { type: 'sponge' };
   for (let i = slabs.length - 1; i >= 0; i--) {
     const s = slabs[i];
     if (Math.abs(x - s.x) < SLAB_W / 2 + 4 && Math.abs(y - s.y) < SLAB_H / 2 + 4)
@@ -641,9 +572,7 @@ function down(x, y) {
   if (h.type === 'power') {
     stick.on = !stick.on; addSpark(stick.x, stick.y, 2); return;
   }
-  if (h.type === 'sponge') {
-    drag = { type: 'sponge', ox: sponge.x - x, oy: sponge.y - y };
-  } else if (h.type === 'stick') {
+  if (h.type === 'stick') {
     drag = { type: 'stick', ox: stick.x - x, oy: stick.y - y };
   } else {
     h.o.held = true;
@@ -668,12 +597,6 @@ function move(x, y) {
     stick.y = Math.max(60, Math.min(STICK_Y_MAX, ny));
     return;
   }
-  if (drag.type === 'sponge') {
-    sponge.x = Math.max(50, Math.min(W - 50, nx));
-    sponge.y = Math.max(40, Math.min(H - 40, ny));
-    return;
-  }
-
   const o = drag.o;
   const now = performance.now();
   const dt = Math.max(0.012, (now - prev.t) / 1000);
@@ -737,9 +660,8 @@ requestAnimationFrame(loop);
   // ── CONFIGURE: one entry per exposed URL param ──────────────────────────
   var CHEAT_DEFS = [
     {name:'stick',    type:'toggle',                              default:0,   desc:'Put a Fun Fly Stick on the bench, so the signs can be pinned down'},
-    {name:'power',    type:'toggle',                              default:0,   desc:'Stick starts switched on'},
+    {name:'power',    type:'toggle',                              default:1,   desc:'Stick starts switched on'},
     {name:'signs',    type:'toggle',                              default:0,   desc:'Give away the answer: stamp + or - on a charged plastic'},
-    {name:'sponge',   type:'toggle',                              default:1,   desc:'Show the damp sponge that wipes the charge off'},
     {name:'labels',   type:'toggle',                              default:1,   desc:'Show the captions'},
     {name:'sparks',   type:'toggle',                              default:1,   desc:'Show sparks'},
     {name:'resetbtn', type:'toggle',                              default:1,   desc:'Show the start-over arrow'},
