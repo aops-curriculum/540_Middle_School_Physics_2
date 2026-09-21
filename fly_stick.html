@@ -394,7 +394,54 @@ function polarAxis(x, y, skip) {
   const sq = stickCharge();
   if (sq > 0) look(stick.x, stick.y, 2.2 * sq);
   for (const f of flyers) if (f !== skip && f.q > 0.05) look(f.x, f.y, f.q);
-  return { x: ux, y: uy, s: Math.min(1, best * 14000) };
+  /* The pull falls off fast with distance, so a plain proportional scale
+     leaves the split invisible until the stick is almost touching. The
+     square root opens it up while the stick is still a little way off. */
+  return { x: ux, y: uy, s: Math.min(1, Math.sqrt(best * 26000)) };
+}
+
+/* Two clouds of marks, one kind pulled to each end of an object. Left
+   alone they sit scattered through the whole object; pulled hard, they
+   pack into tidy rows at one end, so you can watch them migrate. */
+function splitCloud(ux, uy, s, rx, ry, seed, n, positive, size) {
+  /* with nothing pulling, there is no axis; any one will do, since the
+     marks then sit where the scatter puts them */
+  const m = Math.hypot(ux, uy);
+  const ax = m < 1e-6 ? 0 : ux / m, ay = m < 1e-6 ? 1 : uy / m;
+  const bx = -ay, by = ax;
+  /* how far the object reaches along the slide, and across it */
+  const reach  = Math.hypot(ax * rx, ay * ry);
+  const across = Math.hypot(bx * rx, by * ry);
+
+  const dir = positive ? 1 : -1;
+  const edge = Math.max(0, reach - size * 1.4);
+  const off = dir * edge * 0.94 * s;
+  /* Rows filled from the far end inward, at most two of them, and never
+     reaching past the middle — the other kind is waiting over there. */
+  const step = size * 2.2;
+  const perRow = Math.max(Math.max(1, Math.floor(across * 1.8 / step)),
+                          Math.ceil(n / 2));
+  const rows = Math.ceil(n / perRow);
+  const gap = rows > 1 ? Math.min(step, edge * 0.62 / (rows - 1)) : 0;
+  /* the marks settle into their rows before the pull is at full strength,
+     so the picture is tidy rather than half-scattered most of the time */
+  const t = Math.min(1, s * 1.7);
+  const pts = scatter(n, seed);
+
+  for (let i = 0; i < n; i++) {
+    const row = Math.floor(i / perRow);
+    const cnt = Math.min(perRow, n - row * perRow);
+    const col = i - row * perRow;
+    const u = cnt === 1 ? 0 : (col / (cnt - 1) - 0.5) * 2;
+    /* where it sits once it has finished migrating */
+    const pa = off - dir * row * gap;
+    const pb = u * Math.min(across * 0.82, (cnt - 1) * step * 0.5);
+    /* where it sits when nothing is pulling on it */
+    const qx = pts[i][0] * rx, qy = pts[i][1] * ry;
+    const qa = qx * ax + qy * ay, qb = qx * bx + qy * by;
+    const ca = qa + (pa - qa) * t, cb = qb + (pb - qb) * t;
+    sign(ax * ca + bx * cb, ay * ca + by * cb, positive, size);
+  }
 }
 
 /* charge sitting on the charging tip */
@@ -438,15 +485,13 @@ function drawFlyerCharge(f, A, B, op) {
     /* a sagged flyer is a narrow sliver, so it gets fewer marks than an
        open one, or they would land on top of each other */
     const base = 2 + Math.round(2 * op);
-    const extra = Math.round(f.q * 3);
+    const extra = Math.round(f.q * 2);
     const ax = polarAxis(f.x, f.y, f);
     const c = Math.cos(f.rot), s = Math.sin(f.rot);
-    const wx = ax.x * ax.s * sx * 0.85, wy = ax.y * ax.s * sy * 0.72;
-    const lx = wx * c + wy * s, ly = -wx * s + wy * c;
-    for (const p of scatter(base, f.seed))
-      sign(p[0] * sx + lx, p[1] * sy + ly, true, 4.3);
-    for (const p of scatter(base + extra, f.seed + 91))
-      sign(p[0] * sx - lx, p[1] * sy - ly, false, 4.3);
+    /* the axis is in the room's frame; turn it into the flyer's */
+    const lx = ax.x * c + ax.y * s, ly = -ax.x * s + ax.y * c;
+    splitCloud(lx, ly, ax.s, sx, sy, f.seed,       base,         true,  4.1);
+    splitCloud(lx, ly, ax.s, sx, sy, f.seed + 91,  base + extra, false, 4.1);
     return;
   }
 
@@ -472,10 +517,12 @@ function drawPaperCharge(p) {
   if (ax.s > 0.02) {
     vx = c * (1 - ax.s) + ax.x * ax.s;
     vy = s * (1 - ax.s) + ax.y * ax.s;
+    const m = Math.hypot(vx, vy);
+    if (m < 0.3) { vx = ax.x; vy = ax.y; }
   }
   /* Neutral and far from anything, the two kinds sit together in the
      middle. Near the stick they slide to opposite ends. */
-  const sep = (2.3 + 2.9 * ax.s) / (Math.hypot(vx, vy) || 1);
+  const sep = (2.3 + 4.6 * ax.s) / (Math.hypot(vx, vy) || 1);
   vx *= sep; vy *= sep;
   const lx = vx * c + vy * s, ly = -vx * s + vy * c;
   sign(lx, ly, true, 3.0);
