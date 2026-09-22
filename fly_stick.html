@@ -26,7 +26,7 @@
 
 /* ─── three sims in one file ─────────────────────────────────── */
 /* ?model= picks which picture of charge is drawn over the apparatus.
-   'none' is the bare bench, 'one' the single red charge stuff that flows
+   'none' is the bare bench, 'one' the single blue charge stuff that flows
    from object to object, 'two' the red and blue charge that sit inside
    everything. The apparatus itself is identical in all three, which is
    the point: only the explanation on top of it changes. */
@@ -146,7 +146,7 @@ function btnPos() {
   return { x: stick.x, y: Math.min(stick.y + BTN_Y, BTN_Y_MAX) };
 }
 
-/* A run of charge from one place to another, drawn as red stuff on the
+/* A run of charge from one place to another, drawn as blue stuff on the
    move. Only the sims that draw a charge picture use it. */
 function addFlow(x0, y0, x1, y1, n) {
   if (MODEL === 'none') return;
@@ -332,9 +332,11 @@ function step(dt) {
 
 /* ─── drawing ──────────────────────────────────────────────────── */
 /* ─── the picture of charge, drawn on the apparatus ──────────── */
-/* Red is the charge that moves: the one stuff in the one-fluid picture,
-   the negative charge in the two-fluid one. Blue is positive charge,
-   which stays put. */
+/* The Fun Fly Stick charges positive. In the one-fluid picture its charge
+   is blue stuff that flows from object to object. In the two-fluid one,
+   blue is positive charge, which stays put, and red is negative charge,
+   which is what actually moves: it runs off a flyer onto the stick, and
+   from the spoon onto a charged flyer, leaving positive objects behind. */
 const RED = '#d94141', BLUE = '#3466c4';
 
 /* A pool of charge. There are no pieces of it: the more an object holds,
@@ -346,10 +348,10 @@ function pool(x, y, rx, ry, amount) {
   ctx.translate(x, y);
   ctx.scale(rx, ry);
   const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
-  g.addColorStop(0.00, 'rgba(206,32,32,' + (0.26 + 0.60 * a).toFixed(3) + ')');
-  g.addColorStop(0.40, 'rgba(217,60,60,' + (0.20 + 0.50 * a).toFixed(3) + ')');
-  g.addColorStop(0.74, 'rgba(226,92,84,' + (0.09 + 0.26 * a).toFixed(3) + ')');
-  g.addColorStop(1.00, 'rgba(232,112,98,0)');
+  g.addColorStop(0.00, 'rgba(34,82,188,' + (0.26 + 0.60 * a).toFixed(3) + ')');
+  g.addColorStop(0.40, 'rgba(52,102,196,' + (0.20 + 0.50 * a).toFixed(3) + ')');
+  g.addColorStop(0.74, 'rgba(86,130,212,' + (0.09 + 0.26 * a).toFixed(3) + ')');
+  g.addColorStop(1.00, 'rgba(108,148,222,0)');
   ctx.fillStyle = g;
   ctx.beginPath(); ctx.arc(0, 0, 1, 0, 7); ctx.fill();
   ctx.restore();
@@ -380,9 +382,9 @@ function scatter(n, seed) {
 }
 
 /* Which way the charge inside an object gets pulled, and how hard.
-   Everything charged in this sim is charged the same way as the stick, so
-   an object's own positive charge always slides toward the nearest strong
-   charge and its negative charge slides away. */
+   Everything charged in this sim is charged the same way as the stick
+   (positive), so an object's own negative charge always slides toward the
+   nearest strong charge and its positive charge slides away. */
 function polarAxis(x, y, skip) {
   let ux = 0, uy = 0, best = 0;
   function look(cx, cy, q) {
@@ -413,7 +415,7 @@ function splitCloud(ux, uy, s, rx, ry, seed, n, positive, size) {
   const reach  = Math.hypot(ax * rx, ay * ry);
   const across = Math.hypot(bx * rx, by * ry);
 
-  const dir = positive ? 1 : -1;
+  const dir = positive ? -1 : 1;
   const edge = Math.max(0, reach - size * 1.4);
   const off = dir * edge * 0.94 * s;
   /* Rows filled from the far end inward, at most two of them, and never
@@ -456,7 +458,7 @@ function drawStickCharge(x, y) {
   for (let i = 0; i < 5; i++) {
     const a = -Math.PI + i * Math.PI / 4;
     const px = x + Math.cos(a) * 30, py = y + Math.sin(a) * 26;
-    if (MODEL === 'two') { sign(px, py, false, 4.6); continue; }
+    if (MODEL === 'two') { sign(px, py, true, 4.6); continue; }
     ctx.strokeStyle = '#2b6fd0'; ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(px - 4, py); ctx.lineTo(px + 4, py);
@@ -480,7 +482,7 @@ function drawFlyerCharge(f, A, B, op) {
 
   if (MODEL === 'two') {
     /* Both kinds are always there. A neutral flyer holds equal amounts, a
-       charged one has a surplus of red, and a charge nearby slides the two
+       charged one has a surplus of blue, and a charge nearby slides the two
        kinds to opposite ends. */
     /* a sagged flyer is a narrow sliver, so it gets fewer marks than an
        open one, or they would land on top of each other */
@@ -490,8 +492,8 @@ function drawFlyerCharge(f, A, B, op) {
     const c = Math.cos(f.rot), s = Math.sin(f.rot);
     /* the axis is in the room's frame; turn it into the flyer's */
     const lx = ax.x * c + ax.y * s, ly = -ax.x * s + ax.y * c;
-    splitCloud(lx, ly, ax.s, sx, sy, f.seed,       base,         true,  4.1);
-    splitCloud(lx, ly, ax.s, sx, sy, f.seed + 91,  base + extra, false, 4.1);
+    splitCloud(lx, ly, ax.s, sx, sy, f.seed,       base + extra, true,  4.1);
+    splitCloud(lx, ly, ax.s, sx, sy, f.seed + 91,  base,         false, 4.1);
     return;
   }
 
@@ -525,13 +527,14 @@ function drawPaperCharge(p) {
   const sep = (2.3 + 4.6 * ax.s) / (Math.hypot(vx, vy) || 1);
   vx *= sep; vy *= sep;
   const lx = vx * c + vy * s, ly = -vx * s + vy * c;
-  sign(lx, ly, true, 3.0);
-  sign(-lx, -ly, false, 3.0);
+  sign(lx, ly, false, 3.0);
+  sign(-lx, -ly, true, 3.0);
 }
 
 /* Charge on the move. In the one-fluid picture it runs along as a band of
-   the same red stuff; in the two-fluid one it is negative charge leaving,
-   so it goes as a couple of red signs. */
+   the same blue stuff, from the charged object to the other one. In the
+   two-fluid one it is negative charge running the other way, onto the
+   positive object, so it goes as a couple of red signs heading back. */
 function drawFlows() {
   for (const fl of flows) {
     if (fl.t < 0) continue;
@@ -541,9 +544,9 @@ function drawFlows() {
                      fl.y0 + (fl.y1 - fl.y0) * u + fl.ay * Math.sin(Math.PI * u)];
 
     if (MODEL === 'two') {
-      const h = at(Math.min(1, p * 1.2));
+      const h = at(1 - Math.min(1, p * 1.2));
       sign(h[0], h[1], false, 4.0);
-      const b = at(Math.max(0, p * 1.2 - 0.22));
+      const b = at(1 - Math.max(0, p * 1.2 - 0.22));
       sign(b[0], b[1], false, 3.4);
       continue;
     }
@@ -555,7 +558,7 @@ function drawFlows() {
     const widths = [19, 11, 5];
     const alphas = [0.12, 0.26, 0.56];
     for (let k = 0; k < 3; k++) {
-      ctx.strokeStyle = 'rgba(214,52,52,' + (alphas[k] * fade).toFixed(3) + ')';
+      ctx.strokeStyle = 'rgba(52,102,200,' + (alphas[k] * fade).toFixed(3) + ')';
       ctx.lineWidth = widths[k];
       ctx.beginPath();
       for (let i = 0; i <= 8; i++) {
@@ -1113,7 +1116,7 @@ requestAnimationFrame(loop);
   // ── CONFIGURE: one entry per exposed URL param ──────────────────────────
   var CHEAT_DEFS = [
     {name:'model',    type:'select', values:['none','one','two'],  default:'none',
-                                                           desc:'Which picture of charge is drawn on top: none, one red charge stuff, or two kinds'},
+                                                           desc:'Which picture of charge is drawn on top: none, one blue charge stuff, or two kinds'},
     {name:'power',    type:'toggle',                              default:0,   desc:'Stick starts switched on'},
     {name:'flyers',   type:'number', min:0,   max:3,   step:1,    default:2,   desc:'How many flyers'},
     {name:'papers',   type:'number', min:0,   max:14,  step:1,    default:6,   desc:'How many bits of paper'},

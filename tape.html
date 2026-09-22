@@ -96,9 +96,9 @@ function addPair() {
   const y = 170 + row * 130;
   /* Pulling the pair apart moves charge from one strip to the other, so
      they come away with equal and opposite charge. The top strip comes
-     off negative. */
-  bodies.push(strip('T', 320, y, -1));
-  bodies.push(strip('B', 560, y,  1));
+     off positive and the bottom strip negative. */
+  bodies.push(strip('T', 320, y,  1));
+  bodies.push(strip('B', 560, y, -1));
   pairs++;
 }
 

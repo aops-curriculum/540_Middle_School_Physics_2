@@ -106,7 +106,7 @@ const KINDS = [
 const KQQ   = 9.0e6 * CFG.strength;
 const KIND  = 2.6e8 * CFG.strength;
 const A_MAX = 2400;
-const STICK_Q = -1.6;
+const STICK_Q = 1.6;
 
 /* ─── state ────────────────────────────────────────────────────── */
 let slabs, stick, sparks, rub, hover, drag, prev;
@@ -376,7 +376,7 @@ function drawStick() {
   if (sq) {
     for (let i = 0; i < 5; i++) {
       const a = -Math.PI + i * Math.PI / 4;
-      sign(x + Math.cos(a) * 30, y + Math.sin(a) * 26, false, 4.6);
+      sign(x + Math.cos(a) * 30, y + Math.sin(a) * 26, true, 4.6);
     }
   }
 
@@ -533,7 +533,7 @@ function draw() {
   if (CFG.labels) {
     caption('drag one plastic across another to rub them', W / 2, 52, false);
     if (CFG.stick)
-      label('this charge is negative', stick.x, Math.min(H - 6, stick.y + WAND_LEN + 26));
+      label('this charge is positive', stick.x, Math.min(H - 6, stick.y + WAND_LEN + 26));
   }
   drawResetIcon();
 }
