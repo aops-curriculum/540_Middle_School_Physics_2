@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="eigennode-aspect" content="3/2">
-<title>Four Foam Balls and a PVC Pipe</title>
+<title>Four Aluminum Balls and a PVC Pipe</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 100%; height: 100%; overflow: hidden; }
@@ -183,38 +183,33 @@ function sign(x, y, positive, s) {
   ctx.stroke();
 }
 
-/* a light foam ball, with its letter written on it */
+/* a small aluminum ball, with its letter written on it */
 function drawBall(it) {
   const x = it.x, y = it.y, r = radius(it);
 
   ctx.fillStyle = 'rgba(0,0,0,0.09)';
   ctx.beginPath(); ctx.ellipse(x + 3, y + 4, r, r, 0, 0, 7); ctx.fill();
 
-  const g = ctx.createRadialGradient(x - r * 0.38, y - r * 0.42, r * 0.12, x, y, r * 1.05);
+  /* metal: a hard highlight up top, a dark middle, then light bouncing back
+     up off the table along the bottom rim */
+  const g = ctx.createRadialGradient(x - r * 0.38, y - r * 0.42, r * 0.10, x, y, r * 1.05);
   g.addColorStop(0, '#ffffff');
-  g.addColorStop(0.55, '#f2f4f6');
-  g.addColorStop(1, '#ccd3d9');
+  g.addColorStop(0.30, '#e3e8ec');
+  g.addColorStop(0.68, '#a7b1ba');
+  g.addColorStop(1, '#79848e');
   ctx.fillStyle = g;
-  ctx.strokeStyle = '#9aa3ac'; ctx.lineWidth = 1.5;
+  ctx.strokeStyle = '#6d777f'; ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); ctx.stroke();
 
-  /* the little pits that make foam look like foam */
-  ctx.fillStyle = 'rgba(150,163,175,0.28)';
-  let s = 9301;
-  const rnd = () => (s = (s * 9301 + 49297) % 233280) / 233280;
-  for (let i = 0; i < 26; i++) {
-    const a = rnd() * Math.PI * 2, rr = Math.sqrt(rnd()) * r * 0.86;
-    ctx.beginPath();
-    ctx.arc(x + Math.cos(a) * rr, y + Math.sin(a) * rr, 0.9 + rnd() * 1.3, 0, 7);
-    ctx.fill();
-  }
+  ctx.strokeStyle = 'rgba(232,238,243,0.85)'; ctx.lineWidth = r * 0.16;
+  ctx.beginPath(); ctx.arc(x, y, r * 0.84, 0.55, 2.59); ctx.stroke();
 
-  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
   ctx.beginPath();
-  ctx.ellipse(x - r * 0.34, y - r * 0.38, r * 0.26, r * 0.17, -0.5, 0, 7);
+  ctx.ellipse(x - r * 0.34, y - r * 0.38, r * 0.24, r * 0.15, -0.5, 0, 7);
   ctx.fill();
 
-  ctx.fillStyle = '#33404d';
+  ctx.fillStyle = '#26313b';
   ctx.font = 'bold 19px Arial';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(it.id, x, y + 1);
