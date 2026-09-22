@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="eigennode-aspect" content="3/2">
-<title>Four Foam Balls and a Glass Rod</title>
+<title>Four Foam Balls and a PVC Pipe</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 100%; height: 100%; overflow: hidden; }
@@ -32,8 +32,6 @@ const bool = (k, d) => Q.has(k) ? Q.get(k) !== '0' : d;
 const CFG = {
   labels:   bool('labels', true),
   record:   bool('record', true),
-  /* off by default: working out which ball is which is the whole point */
-  answers:  bool('answers', false),
   resetbtn: bool('resetbtn', true),
   swing:    Math.max(0.1, num('swing', 1))
 };
@@ -67,17 +65,17 @@ const SHELF_X = [120, 258, 396, 534, 700];
    neutral. Nothing in the sim ever says so; you have to hang them in
    pairs and work it out. */
 const ITEMS = [
-  { id: 'A',   kind: 'ball', q: -2.2 },
-  { id: 'B',   kind: 'ball', q:  2.2 },
-  { id: 'C',   kind: 'ball', q:  0   },
-  { id: 'D',   kind: 'ball', q:  0   },
-  { id: 'rod', kind: 'rod',  q:  2.6, label: 'glass rod' }
+  { id: 'A',    kind: 'ball', q: -2.2 },
+  { id: 'B',    kind: 'ball', q:  2.2 },
+  { id: 'C',    kind: 'ball', q:  0   },
+  { id: 'D',    kind: 'ball', q:  0   },
+  { id: 'pipe', kind: 'pipe', q: -2.6, label: 'PVC pipe' }
 ];
 
-function radius(it) { return it.kind === 'rod' ? 32 : 26; }
+function radius(it) { return it.kind === 'pipe' ? 32 : 26; }
 /* how far the item reaches below its middle, so it rests on the shelf
    instead of sinking through it */
-function halfH(it) { return it.kind === 'rod' ? 48 : 26; }
+function halfH(it) { return it.kind === 'pipe' ? 48 : 26; }
 
 /* ─── state ────────────────────────────────────────────────────── */
 let items, slots, record, hover, drag;
@@ -220,15 +218,10 @@ function drawBall(it) {
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(it.id, x, y + 1);
   ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
-
-  if (CFG.answers) {
-    if (it.q) sign(x + r * 0.72, y - r * 0.72, it.q > 0, 8.5);
-    else caption('neutral', x, y + r + 16, false);
-  }
 }
 
-/* a glass rod, hanging almost upright */
-function drawRod(it) {
+/* a length of PVC pipe, hanging almost upright */
+function drawPipe(it) {
   const x = it.x, y = it.y;
   ctx.save();
   ctx.translate(x, y);
@@ -238,26 +231,37 @@ function drawRod(it) {
   roundRect(-11 + 3, -46 + 4, 22, 92, 11); ctx.fill();
 
   const g = ctx.createLinearGradient(-11, 0, 11, 0);
-  g.addColorStop(0.00, 'rgba(150,200,220,0.75)');
-  g.addColorStop(0.22, 'rgba(245,252,255,0.95)');
-  g.addColorStop(0.50, 'rgba(198,228,242,0.85)');
-  g.addColorStop(0.80, 'rgba(240,250,255,0.92)');
-  g.addColorStop(1.00, 'rgba(140,190,212,0.8)');
+  g.addColorStop(0.00, '#c9c4b6');
+  g.addColorStop(0.20, '#f5f2e9');
+  g.addColorStop(0.50, '#e6e2d4');
+  g.addColorStop(0.80, '#f6f3ec');
+  g.addColorStop(1.00, '#c4bfb1');
   ctx.fillStyle = g;
-  ctx.strokeStyle = '#7fa9bd'; ctx.lineWidth = 1.5;
+  ctx.strokeStyle = '#a29c8c'; ctx.lineWidth = 1.5;
   roundRect(-11, -46, 22, 92, 11);
   ctx.fill(); ctx.stroke();
 
-  ctx.fillStyle = 'rgba(255,255,255,0.85)';
-  roundRect(-6.5, -38, 3.4, 74, 1.7); ctx.fill();
+  /* the hollow bore at each end */
+  for (const ey of [-46, 46]) {
+    ctx.fillStyle = '#7d7768';
+    ctx.beginPath(); ctx.ellipse(0, ey, 8.3, 3.2, 0, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#5c5747'; ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  roundRect(-6.5, -38, 3.2, 74, 1.6); ctx.fill();
+
+  /* negative charge, always shown -- rubbing PVC with wool leaves it negative */
+  sign(0, -30, false, 7);
+  sign(0, 0, false, 7);
+  sign(0, 30, false, 7);
 
   ctx.restore();
-
-  if (CFG.answers) sign(x + 20, y - 34, true, 8.5);
 }
 
 function drawItem(it) {
-  if (it.kind === 'rod') drawRod(it); else drawBall(it);
+  if (it.kind === 'pipe') drawPipe(it); else drawBall(it);
 }
 
 function drawThreads() {
@@ -360,9 +364,9 @@ function draw() {
   drawRecord();
 
   if (CFG.labels) {
-    const rod = items.find(it => it.kind === 'rod');
-    if (rod && rod.slot < 0 && !rod.held)
-      caption('rubbed with wool, so it is positive', rod.x, FLOOR + 22, false);
+    const pipe = items.find(it => it.kind === 'pipe');
+    if (pipe && pipe.slot < 0 && !pipe.held)
+      caption('rubbed with wool, so it is negative', pipe.x, FLOOR + 22, false);
   }
   drawResetIcon();
 }
@@ -462,7 +466,6 @@ requestAnimationFrame(loop);
 
   // ── CONFIGURE: one entry per exposed URL param ──────────────────────────
   var CHEAT_DEFS = [
-    {name:'answers',  type:'toggle',                              default:0,   desc:'Give away the answer: mark each item + , - or neutral'},
     {name:'record',   type:'toggle',                              default:1,   desc:'Keep the list of pairs you have tried'},
     {name:'labels',   type:'toggle',                              default:1,   desc:'Show the captions'},
     {name:'resetbtn', type:'toggle',                              default:1,   desc:'Show the start-over arrow'},
