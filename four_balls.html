@@ -61,12 +61,13 @@ const THREAD = 198;
 const SLOT_X = [390, 520];
 const SHELF_X = [120, 258, 396, 534, 700];
 
-/* The answer the lesson works toward: A negative, B positive, C and D
-   neutral. Nothing in the sim ever says so; you have to hang them in
-   pairs and work it out. */
+/* The answer the lesson works toward: A positive, B negative, C and D
+   neutral. B is the one the pipe settles on its own: the pipe is negative,
+   so the ball it repels is negative too. Nothing in the sim ever says so;
+   you have to hang them in pairs and work it out. */
 const ITEMS = [
-  { id: 'A',    kind: 'ball', q: -2.2 },
-  { id: 'B',    kind: 'ball', q:  2.2 },
+  { id: 'A',    kind: 'ball', q:  2.2 },
+  { id: 'B',    kind: 'ball', q: -2.2 },
   { id: 'C',    kind: 'ball', q:  0   },
   { id: 'D',    kind: 'ball', q:  0   },
   { id: 'pipe', kind: 'pipe', q: -2.6, label: 'PVC pipe' }
