@@ -61,16 +61,16 @@ const THREAD = 198;
 const SLOT_X = [390, 520];
 const SHELF_X = [120, 258, 396, 534, 700];
 
-/* The answer the lesson works toward: A positive, B negative, C and D
-   neutral. B is the one the pipe settles on its own: the pipe is negative,
-   so the ball it repels is negative too. Nothing in the sim ever says so;
+/* The answer the lesson works toward: A negative, B positive, C and D
+   neutral. B is the one the pipe settles on its own: the pipe is positive,
+   so the ball it repels is positive too. Nothing in the sim ever says so;
    you have to hang them in pairs and work it out. */
 const ITEMS = [
-  { id: 'A',    kind: 'ball', q:  2.2 },
-  { id: 'B',    kind: 'ball', q: -2.2 },
+  { id: 'A',    kind: 'ball', q: -2.2 },
+  { id: 'B',    kind: 'ball', q:  2.2 },
   { id: 'C',    kind: 'ball', q:  0   },
   { id: 'D',    kind: 'ball', q:  0   },
-  { id: 'pipe', kind: 'pipe', q: -2.6, label: 'PVC pipe' }
+  { id: 'pipe', kind: 'pipe', q:  2.6, label: 'PVC pipe' }
 ];
 
 function radius(it) { return it.kind === 'pipe' ? 32 : 26; }
@@ -248,10 +248,10 @@ function drawPipe(it) {
   ctx.fillStyle = 'rgba(255,255,255,0.5)';
   roundRect(-6.5, -38, 3.2, 74, 1.6); ctx.fill();
 
-  /* negative charge, always shown -- rubbing PVC with wool leaves it negative */
-  sign(0, -30, false, 7);
-  sign(0, 0, false, 7);
-  sign(0, 30, false, 7);
+  /* positive charge, always shown -- rubbing PVC with wool leaves it positive */
+  sign(0, -30, true, 7);
+  sign(0, 0, true, 7);
+  sign(0, 30, true, 7);
 
   ctx.restore();
 }
@@ -362,7 +362,7 @@ function draw() {
   if (CFG.labels) {
     const pipe = items.find(it => it.kind === 'pipe');
     if (pipe && pipe.slot < 0 && !pipe.held)
-      caption('rubbed with wool, so it is negative', pipe.x, FLOOR + 22, false);
+      caption('rubbed with wool, so it is positive', pipe.x, FLOOR + 22, false);
   }
   drawResetIcon();
 }
