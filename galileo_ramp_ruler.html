@@ -86,7 +86,17 @@
    time intervals, so the odd-number pattern 1 : 3 : 5 : 7 : 9 can be
    counted off against a neutral scale rather than assumed by the
    layout. The slope is adjustable to show the pattern doesn't depend
-   on it. At the foot of the beam the ball rolls out onto level ground
+   on it.
+
+   Realistic, round numbers: the beam is 5.00 m long, so each
+   graduation is 20 cm and every fifth one falls on a whole metre.
+   Rather than offering whole-number angles (which give awkward
+   times such as 0.76 s), the slider offers round time intervals
+   between marks -- 1.0, 0.9, ... 0.5 s -- and the beam is tilted to
+   whatever angle produces that interval. So the clock readings at
+   the teal marks are always multiples of a tenth of a second, and
+   the angle is the quantity that comes out un-round (e.g. 9.1 deg).
+   At the foot of the beam the ball rolls out onto level ground
    and coasts off the edge of the canvas at the speed it earned.
 --------------------------------------------------------------- */
 
@@ -98,7 +108,7 @@
 ------------------------------------------------------------- */
 const G        = 9.81;      // m/s^2
 const ROLL     = 5 / 7;     // solid-sphere rolling factor
-const BEAM_LEN = 7.0;       // metres; Galileo's beam was ~12 braccia
+const BEAM_LEN = 5.0;       // metres (Galileo's beam was ~12 braccia, about 7 m)
 
 /* --- The scale on the beam -----------------------------------
    UNITS graduations of L/UNITS each. SQUARES are the ones the ball
@@ -111,13 +121,29 @@ const UNITS      = 25;
 const SQUARES    = [1, 4, 9, 16, 25];
 const SQUARE_SET = new Set(SQUARES);          // fast "is n a square?" test
 
-const MIN_DEG = 4, MAX_DEG = 16;
+/* --- Round time intervals -----------------------------------
+   The slider chooses one of these intervals (seconds between one
+   teal mark and the next). Listed shallow-to-steep, because the
+   slider puts its first value at the bottom: a LONGER interval
+   needs a SHALLOWER beam.
+
+   Working backwards from the interval to the angle:
+     the ball reaches the far end after 5 intervals, T = 5*dt
+     from L = (1/2) a T^2      ->  a = 2L / T^2
+     from a = (5/7) g sin(th)  ->  th = asin( a / ((5/7) g) )
+   With L = 5 m this gives 3.3 deg (1.0 s) up to 13.2 deg (0.5 s).
+------------------------------------------------------------- */
+const INTERVALS = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5];
+
+function angleFor(dt) {
+  const T = SQUARES.length * dt;            // time to reach the far end
+  const a = 2 * BEAM_LEN / (T * T);         // acceleration that requires
+  return Math.asin(a / (ROLL * G)) * 180 / Math.PI;   // in degrees
+}
 
 const accel     = d => ROLL * G * Math.sin(d * Math.PI / 180);
 const totalTime = d => Math.sqrt(2 * BEAM_LEN / accel(d));
 const distance  = (d, t) => Math.min(0.5 * accel(d) * t * t, BEAM_LEN);
-// Exact clock reading when the ball reaches distance s:  t = sqrt(2s/a)
-const timeAt    = (d, s) => Math.sqrt(2 * s / accel(d));
 // Speed at the foot of the beam: v = a*T = sqrt(2aL). On level ground a
 // sphere rolling without slipping has no net force and no torque on it,
 // so it carries this speed away unchanged.
@@ -131,10 +157,10 @@ const exitSpeed = d => accel(d) * totalTime(d);
    from, so we work backwards from the anchor.
 
    The canvas is sized to the drawing: the headroom above the anchor is
-   what the beam and ball need to swing up to MAX_DEG, and the space
-   below is the two label rows plus the caption.
+   what the beam and ball need to swing up to the steepest setting (13.2 deg), and the space
+   below is the two label rows.
 ------------------------------------------------------------- */
-const CW = 572, CH = 240;
+const CW = 572, CH = 216;
 const ANCHOR   = { x:514, y:156 };
 const BEAM_PX  = 472;
 const UNIT_PX  = BEAM_PX / UNITS;             // 18.88 px per graduation
@@ -182,7 +208,9 @@ const SERIF = "Palatino, Georgia, serif";
 const MONO  = "ui-monospace, Consolas, monospace";
 
 /* --- State ---------------------------------------------------- */
-let deg       = 8;      // current slope
+let stepIdx   = 4;                        // which entry of INTERVALS (0.6 s)
+let interval  = INTERVALS[stepIdx];       // seconds between teal marks
+let deg       = angleFor(interval);       // slope that produces it
 let clock     = 0;      // seconds since release
 let running   = false;
 let lastStamp = 0;      // previous animation frame timestamp (ms)
@@ -254,25 +282,28 @@ function drawRuler(s) {
     ctx.stroke();
   }
 
-  // 3a. Unit numbers under the ruler: every fifth graduation, in grey,
-  //     with the end of the scale in ink so the beam's length reads as
-  //     25 units. The teal marks are left unlabelled -- their positions
-  //     are read off the scale by counting.
+  // 3a. Metre labels under the ruler: every fifth graduation is a whole
+  //     metre (5 x 20 cm). The end of the scale is in ink so the beam's
+  //     length reads as 5 m. The teal marks are left unlabelled -- their
+  //     positions are read off the scale by counting 20 cm graduations.
   ctx.textAlign = "center";
   ctx.font      = "11px " + SERIF;
   for (let n = 0; n <= UNITS; n += 5) {
+    const metres = n * BEAM_LEN / UNITS;
     ctx.fillStyle = n === UNITS ? INK : SOFT;
-    ctx.fillText(String(n), n * UNIT_PX, Y_UNITS);
+    ctx.fillText(n === 0 ? "0" : metres + " m", n * UNIT_PX, Y_UNITS);
   }
 
   // 3b. The clock reading at each teal mark, revealed as the ball passes.
   ctx.fillStyle = TEAL;
   ctx.font      = "600 11px " + MONO;
-  for (const n of SQUARES) {
+  // The k-th square is reached at exactly k intervals. Computing it as
+  // k * interval (rather than from the angle) avoids rounding noise.
+  SQUARES.forEach((n, i) => {
     if (reached >= n) {
-      ctx.fillText(timeAt(deg, n / UNITS * BEAM_LEN).toFixed(2), n * UNIT_PX, Y_CLOCK);
+      ctx.fillText(((i + 1) * interval).toFixed(1) + " s", n * UNIT_PX, Y_CLOCK);
     }
-  }
+  });
 }
 
 /* Draws the ball at (cx, cy) with its painted radius turned to `spin`
@@ -294,15 +325,6 @@ function drawBall(cx, cy, spin) {
   ctx.moveTo(cx, cy);
   ctx.lineTo(cx + r * 0.85 * Math.cos(spin), cy + r * 0.85 * Math.sin(spin));
   ctx.stroke();
-}
-
-function drawCaptions() {
-  // The pivot is fixed, so the caption can be too.
-  ctx.textAlign = "left";
-  ctx.fillStyle = SOFT;
-  ctx.font = "11.5px " + SERIF;
-  ctx.fillText("the number under each teal mark is the clock reading, in seconds, as the ball passes it",
-               60, ANCHOR.y + 72);
 }
 
 function render() {
@@ -342,7 +364,6 @@ function render() {
              th + (BEAM_PX + flatPx) / BALL_R);
   }
 
-  drawCaptions();
 }
 
 /* --- Animation -----------------------------------------------
@@ -414,10 +435,12 @@ function addMeta(label, id, suffix) {
   controls.append(span);
 }
 
+addMeta("marks every", "every", "s");
 addMeta("clock", "clock", "s");
 addMeta("distance", "dist", "m");
 const clockEl = document.getElementById("clock");
 const distEl  = document.getElementById("dist");
+const everyEl = document.getElementById("every");
 
 /* The vertical slider stands to the left of the beam with its bottom
    lined up on the pivot, so pushing the handle up raises the far end
@@ -431,19 +454,23 @@ tiltBox.className = "tilt";
 tiltBox.style.top = (ANCHOR.y - SLIDER_H) + "px";
 
 tiltRange.type  = "range";
-tiltRange.min   = String(MIN_DEG);
-tiltRange.max   = String(MAX_DEG);
+// The slider's value is a position in the INTERVALS list (0 to 5),
+// not an angle; the angle is looked up from it.
+tiltRange.min   = "0";
+tiltRange.max   = String(INTERVALS.length - 1);
 tiltRange.step  = "1";
-tiltRange.value = String(deg);
+tiltRange.value = String(stepIdx);
 tiltRange.style.height = SLIDER_H + "px";
 tiltRange.setAttribute("aria-label", "Beam angle in degrees");
 tiltRange.addEventListener("input", () => {
-  deg = Number(tiltRange.value);
-  tiltOut.textContent = deg + "\u00B0";
+  stepIdx  = Number(tiltRange.value);
+  interval = INTERVALS[stepIdx];
+  deg      = angleFor(interval);
+  tiltOut.textContent = deg.toFixed(1) + "\u00B0";
   reset();
 });
 
-tiltOut.textContent = deg + "\u00B0";
+tiltOut.textContent = deg.toFixed(1) + "\u00B0";
 tiltBox.append(tiltRange, tiltOut);
 stageWrap.append(tiltBox);
 
@@ -452,6 +479,7 @@ function updateReadouts() {
   const s = distance(deg, t);
   clockEl.textContent = t.toFixed(2);
   distEl.textContent  = s.toFixed(2);
+  everyEl.textContent = interval.toFixed(1);
 }
 
 reset();
