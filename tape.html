@@ -87,6 +87,23 @@ const KQQ  = 9.0e6 * CFG.strength;
 const KIND = 2.6e8 * CFG.strength;
 const A_MAX = 2400;
 
+/* ─── the storage tub ─────────────────────────────────────────── */
+/* Drop a strip or a flyer in the tub to set it aside. While it's in
+   there it doesn't push, pull, or get pushed; drag it back out to use it. */
+const TUB_X = 600, TUB_W = 230, TUB_H = 132, TUB_Y = FLOOR - TUB_H;
+function tubSlot(b, i, n) {
+  const gap = n > 1 ? Math.min(40, (TUB_W - 60) / (n - 1)) : 0;
+  return { x: TUB_X + 30 + i * gap + (n > 1 ? 0 : TUB_W / 2 - 30),
+           y: FLOOR - 12 - (b.kind === 'tape' ? SH / 2 : b.hy) };
+}
+function overTub(x, y) {
+  return x > TUB_X - 10 && x < TUB_X + TUB_W + 10 && y > TUB_Y - 10 && y < FLOOR + 10;
+}
+function inPlay() { return bodies.filter(b => !b.stored); }
+function stored() {
+  return bodies.filter(b => b.stored).sort((a, b) => a.storedAt - b.storedAt);
+}
+
 /* ─── state ────────────────────────────────────────────────────── */
 let bodies, pairs, sparks, hover, drag, prev;
 
@@ -106,13 +123,15 @@ function strip(letter, x, y, q) {
   return { kind: 'tape', letter: letter, x: x, y: y, vx: 0, vy: 0,
            q: q, r: STRIP_R, hx: SW / 2 + 5, hy: SH / 2 + 5,
            rot: (Math.random() - 0.5) * 0.12,
-           held: false, seed: 17 + pairs * 53 + (q > 0 ? 0 : 7) };
+           held: false, stored: false, storedAt: 0,
+           seed: 17 + pairs * 53 + (q > 0 ? 0 : 7) };
 }
 
 function addFlyer(i) {
-  bodies.push({ kind: 'flyer', x: 760, y: 150 + i * 150, vx: 0, vy: 0,
+  /* stacked high enough that the third one clears the storage tub */
+  bodies.push({ kind: 'flyer', x: 760, y: 130 + i * 95, vx: 0, vy: 0,
                 q: 0, r: 30, hx: 22, hy: 31, rot: i * 0.6 - 0.3,
-                held: false, seed: 101 + i * 29 });
+                held: false, stored: false, storedAt: 0, seed: 101 + i * 29 });
 }
 
 function reset() {
@@ -151,10 +170,20 @@ function addSpark(x, y, n) {
 
 /* ─── physics ──────────────────────────────────────────────────── */
 function step(dt) {
-  for (const a of bodies) {
+  /* whatever is in the tub slides into its place and sits still */
+  const box = stored();
+  box.forEach((b, i) => {
+    if (b.held) return;
+    const t = tubSlot(b, i, box.length), k = Math.min(1, dt * 12);
+    b.x += (t.x - b.x) * k; b.y += (t.y - b.y) * k;
+    b.rot *= 1 - k; b.vx = 0; b.vy = 0;
+  });
+
+  const live = inPlay();
+  for (const a of live) {
     if (a.held) { a.vx = 0; a.vy = 0; continue; }
     let ax = 0, ay = 0;
-    for (const b of bodies) {
+    for (const b of live) {
       if (b === a) continue;
       const dx = b.x - a.x, dy = b.y - a.y;
       const r = Math.max(Math.hypot(dx, dy), a.r + b.r) || 1;
@@ -179,15 +208,25 @@ function step(dt) {
     if (a.x > W - a.hx) { a.x = W - a.hx; a.vx *= -0.4; }
     if (a.y < a.hy) { a.y = a.hy; a.vy *= -0.4; }
     if (a.y > y1) { a.y = y1; a.vy *= -0.4; }
+
+    /* a loose strip bumps off the outside of the tub instead of drifting
+       in; only a drop puts one in there */
+    const l = TUB_X - a.hx, r = TUB_X + TUB_W + a.hx, t = TUB_Y - a.hy;
+    if (a.x > l && a.x < r && a.y > t) {
+      const pl = a.x - l, pr = r - a.x, pt = a.y - t;
+      if (pt <= pl && pt <= pr) { a.y = t; if (a.vy > 0) a.vy *= -0.4; }
+      else if (pl < pr) { a.x = l; if (a.vx > 0) a.vx *= -0.4; }
+      else { a.x = r; if (a.vx < 0) a.vx *= -0.4; }
+    }
     a.rot += a.vx * 0.0004 * dt * 60;
     a.rot = Math.max(-0.4, Math.min(0.4, a.rot * 0.985));
   }
 
   /* nothing passes through anything, and nothing swaps charge: tape is
      plastic, so whatever landed on a strip stays there */
-  for (let i = 0; i < bodies.length; i++) {
-    for (let j = i + 1; j < bodies.length; j++) {
-      const a = bodies[i], b = bodies[j];
+  for (let i = 0; i < live.length; i++) {
+    for (let j = i + 1; j < live.length; j++) {
+      const a = live[i], b = live[j];
       const dx = b.x - a.x, dy = b.y - a.y;
       const d = Math.hypot(dx, dy) || 1e-6;
       const touch = a.r + b.r;
@@ -247,8 +286,9 @@ function scatter(n, seed) {
    decides which way the marks slide. */
 function polarAxis(b) {
   let ux = 0, uy = 0, best = 0, sgn = 1;
+  if (b.stored && !b.held) return { x: 0, y: 0, s: 0 };
   for (const o of bodies) {
-    if (o === b || !o.q) continue;
+    if (o === b || !o.q || o.stored) continue;
     const dx = o.x - b.x, dy = o.y - b.y;
     const r2 = Math.max(dx * dx + dy * dy, 900);
     const w = Math.abs(o.q) / r2;
@@ -502,18 +542,37 @@ function label(text, x, y) {
   ctx.textAlign = 'left';
 }
 
+function drawTub() {
+  const hot = drag && overTub(drag.o.x, drag.o.y);
+  ctx.save();
+  ctx.fillStyle = hot ? '#e4eef7' : '#eef1f4';
+  ctx.strokeStyle = hot ? '#6f8fae' : '#a9b3bc'; ctx.lineWidth = 2;
+  roundRect(TUB_X, TUB_Y, TUB_W, TUB_H, 10); ctx.fill(); ctx.stroke();
+  /* the rim, so it reads as an open tub */
+  ctx.fillStyle = hot ? '#c9d9e8' : '#d9dee3';
+  roundRect(TUB_X - 4, TUB_Y - 5, TUB_W + 8, 10, 5); ctx.fill(); ctx.stroke();
+  ctx.font = 'bold 15px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = hot ? '#4f6c88' : '#7d8992';
+  ctx.fillText('storage', TUB_X + TUB_W / 2, TUB_Y + 18);
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.restore();
+}
+
+function drawBody(b) { if (b.kind === 'tape') drawStrip(b); else drawFlyer(b); }
+
 function draw() {
   ctx.clearRect(0, 0, W, H);
   drawFloor();
   drawRoll();
-  for (const b of bodies) {
-    if (b.kind === 'tape') drawStrip(b); else drawFlyer(b);
-  }
+  drawTub();
+  for (const b of stored()) if (!b.held) drawBody(b);
+  for (const b of bodies) if (!b.stored || b.held) drawBody(b);
   drawSparks();
 
   if (CFG.labels) {
     for (const b of bodies)
-      if (b.kind === 'flyer') label('flyer', b.x, Math.min(H - 6, b.y + b.r + 20));
+      if (b.kind === 'flyer' && !(b.stored && !b.held)) label('flyer', b.x, Math.min(H - 6, b.y + b.r + 20));
   }
   drawResetIcon();
 }
@@ -547,6 +606,8 @@ function down(x, y) {
     return;
   }
   h.o.held = true;
+  /* picking something up out of the tub puts it back in play */
+  h.o.stored = false;
   drag = { o: h.o, ox: h.o.x - x, oy: h.o.y - y };
   prev = { x: x, y: y, t: performance.now() };
   canvas.style.cursor = 'grabbing';
@@ -571,7 +632,13 @@ function move(x, y) {
 }
 
 function up() {
-  if (drag && drag.o) drag.o.held = false;
+  if (drag && drag.o) {
+    const o = drag.o;
+    o.held = false;
+    if (overTub(o.x, o.y)) {
+      o.stored = true; o.storedAt = performance.now(); o.vx = 0; o.vy = 0;
+    }
+  }
   drag = null;
   canvas.style.cursor = 'default';
 }

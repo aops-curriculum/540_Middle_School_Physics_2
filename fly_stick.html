@@ -102,6 +102,44 @@ const SPOON_BY = -34, SPOON_RX = 15, SPOON_RY = 23;  /* bowl */
 const SPOON_TIP = SPOON_BY - SPOON_RY + 2;           /* the end that touches */
 const RULER_L = 168, RULER_W = 34;
 
+/* ─── the storage tub ─────────────────────────────────────────── */
+/* Drop a flyer or a bit of paper in the tub to set it aside. While it's
+   in there nothing pulls on it and it pulls on nothing; drag it back out
+   to use it. */
+const TUB_X = 16, TUB_W = 210, TUB_H = 104, TUB_Y = FLOOR - TUB_H;
+function overTub(x, y) {
+  return x > TUB_X - 10 && x < TUB_X + TUB_W + 10 && y > TUB_Y - 10 && y < FLOOR + 10;
+}
+function stored() {
+  return flyers.concat(papers).filter(o => o.stored)
+    .sort((a, b) => a.storedAt - b.storedAt);
+}
+/* where each thing in the tub sits: side by side in the order they went
+   in, squeezed closer together if they don't all fit */
+function tubSlots() {
+  const box = stored();
+  const ws = box.map(o => o.r ? 40 : 22);
+  const total = ws.reduce((a, b) => a + b, 0);
+  const k = Math.min(1, (TUB_W - 24) / (total || 1));
+  let x = TUB_X + 12;
+  return box.map((o, i) => {
+    const cx = x + ws[i] * k / 2; x += ws[i] * k;
+    return { o: o, x: cx, y: o.r ? FLOOR - 12 - o.r : FLOOR - 14 - 6.5 };
+  });
+}
+/* loose things bump off the outside of the tub instead of falling in;
+   only a drop puts one in there */
+function bumpTub(o, hx, hy) {
+  const l = TUB_X - hx, r = TUB_X + TUB_W + hx, t = TUB_Y - hy;
+  if (o.x > l && o.x < r && o.y > t) {
+    const pl = o.x - l, pr = r - o.x, pt = o.y - t;
+    if (pt <= pl && pt <= pr) { o.y = t; if (o.vy > 0) o.vy *= -0.2; o.vx *= 0.75; }
+    else if (pl < pr) { o.x = l; if (o.vx > 0) o.vx *= -0.4; }
+    else { o.x = r; if (o.vx < 0) o.vx *= -0.4; }
+  }
+}
+const NO_PULL = { x: 0, y: 0, s: 0 };
+
 /* ─── physics constants ────────────────────────────────────────── */
 const G    = 700 * CFG.gravity;
 const KREP = 8.5e6 * CFG.strength;   // like charges push apart
@@ -113,17 +151,19 @@ let stick, flyers, papers, hand, glove, sparks, flows, hover, drag, prev;
 let clock = 0;
 
 function reset() {
-  stick = { x: 200, y: 268, on: CFG.power, crackle: 0 };
+  stick = { x: 280, y: 268, on: CFG.power, crackle: 0 };
   flyers = [];
   const fx = [400, 520, 645];
   for (let i = 0; i < CFG.nflyers; i++)
     flyers.push({ x: fx[i], y: FLOOR - 30, vx: 0, vy: 0, q: 0, r: 30,
                   rot: i * 0.5 - 0.25, held: false, seed: 7 + i * 31,
+                  stored: false, storedAt: 0,
                   open: CFG.collapse ? 0 : 1 });
   papers = [];
   for (let i = 0; i < CFG.npapers; i++)
     papers.push({ x: 600 + i * 26, y: FLOOR - 5, vx: 0, vy: 0, seed: 13 + i * 19,
-                  rot: (i * 1.7) % 1.4 - 0.7, stuck: null, held: false });
+                  rot: (i * 1.7) % 1.4 - 0.7, stuck: null, held: false,
+                  stored: false, storedAt: 0 });
   hand  = { x: 835, y: 330 };          /* the spoon */
   glove = { x: 782, y: 462, worn: false };  /* the plastic ruler */
   sparks = []; flows = [];
@@ -224,6 +264,15 @@ function step(dt) {
     }
   }
 
+  /* ── the tub: whatever is in it slides into place and sits still ── */
+  for (const t of tubSlots()) {
+    const o = t.o;
+    if (o.held) continue;
+    const k = Math.min(1, dt * 12);
+    o.x += (t.x - o.x) * k; o.y += (t.y - o.y) * k;
+    o.rot *= 1 - k; o.vx = 0; o.vy = 0;
+  }
+
   /* ── flyers ── */
   for (const f of flyers) {
     /* charged: the loop springs open. uncharged: it sags flat again. */
@@ -233,6 +282,7 @@ function step(dt) {
       f.open += (tgt - f.open) * Math.min(1, rate * dt);
       if (Math.abs(tgt - f.open) < 0.004) f.open = tgt;
     } else f.open = 1;
+    if (f.stored) continue;
 
     const dx = f.x - stick.x, dy = f.y - stick.y;
     let r = Math.hypot(dx, dy) || 1;
@@ -279,21 +329,22 @@ function step(dt) {
     if (f.y < f.r + 6) { f.y = f.r + 6; f.vy = Math.max(0, f.vy); }
     if (f.x < f.r) { f.x = f.r; f.vx *= -0.4; }
     if (f.x > W - f.r) { f.x = W - f.r; f.vx *= -0.4; }
+    bumpTub(f, f.r * 0.6, f.r);
     f.rot += f.vx * 0.0015 * dt * 60 + (f.y < rest - 4 ? dt * 0.35 : 0);
   }
 
   /* ── bits of paper ── */
   for (const p of papers) {
-    if (p.held) continue;
+    if (p.held || p.stored) continue;
     if (p.stuck) {
       const t = p.stuck.t;
-      const tq = (t === stick) ? sq : t.q;
+      const tq = (t === stick) ? sq : t.stored ? 0 : t.q;
       if (tq <= 0.05) { p.stuck = null; }
       else { p.x = t.x + p.stuck.ox; p.y = t.y + p.stuck.oy; p.vx = 0; p.vy = 0; continue; }
     }
     const cands = [];
     if (sq > 0) cands.push({ o: stick, q: sq, k: KPAP });
-    for (const f of flyers) if (f.q > 0.05) cands.push({ o: f, q: f.q, k: KPAP * 0.5 });
+    for (const f of flyers) if (f.q > 0.05 && !f.stored) cands.push({ o: f, q: f.q, k: KPAP * 0.5 });
 
     let ax = 0, ay = G, best = null, bestA = 0;
     for (const c of cands) {
@@ -317,6 +368,7 @@ function step(dt) {
     if (p.y < 8) { p.y = 8; p.vy = Math.max(0, p.vy); }
     if (p.x < 12) { p.x = 12; p.vx *= -0.4; }
     if (p.x > W - 12) { p.x = W - 12; p.vx *= -0.4; }
+    bumpTub(p, 10, 5);
   }
 
   for (let i = sparks.length - 1; i >= 0; i--) {
@@ -395,7 +447,7 @@ function polarAxis(x, y, skip) {
   }
   const sq = stickCharge();
   if (sq > 0) look(stick.x, stick.y, 2.2 * sq);
-  for (const f of flyers) if (f !== skip && f.q > 0.05) look(f.x, f.y, f.q);
+  for (const f of flyers) if (f !== skip && f.q > 0.05 && !f.stored) look(f.x, f.y, f.q);
   /* The pull falls off fast with distance, so a plain proportional scale
      leaves the split invisible until the stick is almost touching. The
      square root opens it up while the stick is still a little way off. */
@@ -488,7 +540,7 @@ function drawFlyerCharge(f, A, B, op) {
        open one, or they would land on top of each other */
     const base = 2 + Math.round(2 * op);
     const extra = Math.round(f.q * 2);
-    const ax = polarAxis(f.x, f.y, f);
+    const ax = f.stored && !f.held ? NO_PULL : polarAxis(f.x, f.y, f);
     const c = Math.cos(f.rot), s = Math.sin(f.rot);
     /* the axis is in the room's frame; turn it into the flyer's */
     const lx = ax.x * c + ax.y * s, ly = -ax.x * s + ax.y * c;
@@ -514,7 +566,7 @@ function drawFlyerCharge(f, A, B, op) {
 function drawPaperCharge(p) {
   if (!CFG.charges || MODEL !== 'two') return;
   const c = Math.cos(p.rot), s = Math.sin(p.rot);
-  const ax = polarAxis(p.x, p.y, null);
+  const ax = p.stored && !p.held ? NO_PULL : polarAxis(p.x, p.y, null);
   let vx = c, vy = s;
   if (ax.s > 0.02) {
     vx = c * (1 - ax.s) + ax.x * ax.s;
@@ -960,9 +1012,27 @@ function label(text, x, y) {
   ctx.textAlign = 'left';
 }
 
+function drawTub() {
+  const hot = drag && drag.o && overTub(drag.o.x, drag.o.y);
+  ctx.save();
+  ctx.fillStyle = hot ? '#e4eef7' : '#eef1f4';
+  ctx.strokeStyle = hot ? '#6f8fae' : '#a9b3bc'; ctx.lineWidth = 2;
+  roundRect(TUB_X, TUB_Y, TUB_W, TUB_H, 10); ctx.fill(); ctx.stroke();
+  /* the rim, so it reads as an open tub */
+  ctx.fillStyle = hot ? '#c9d9e8' : '#d9dee3';
+  roundRect(TUB_X - 4, TUB_Y - 5, TUB_W + 8, 10, 5); ctx.fill(); ctx.stroke();
+  ctx.font = 'bold 15px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = hot ? '#4f6c88' : '#7d8992';
+  ctx.fillText('storage', TUB_X + TUB_W / 2, TUB_Y + 17);
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.restore();
+}
+
 function draw() {
   ctx.clearRect(0, 0, W, H);
   drawFloor();
+  drawTub();
   drawStick();
   for (const p of papers) drawPaper(p);
   for (const f of flyers) drawFlyer(f);
@@ -972,8 +1042,10 @@ function draw() {
   drawSparks();
 
   if (CFG.labels) {
-    for (const f of flyers) label('flyer', f.x, Math.min(H - 6, f.y + f.r + 20));
-    if (papers.length) label('paper', papers[0].x, Math.min(H - 6, papers[0].y + 22));
+    const out = o => !o.stored || o.held;
+    for (const f of flyers) if (out(f)) label('flyer', f.x, Math.min(H - 6, f.y + f.r + 20));
+    const p0 = papers.find(out);
+    if (p0) label('paper', p0.x, Math.min(H - 6, p0.y + 22));
   }
   drawResetIcon();
 }
@@ -1028,7 +1100,8 @@ function down(x, y) {
   } else if (h.type === 'stick') {
     drag = { type: 'stick', ox: stick.x - x, oy: stick.y - y };
   } else {
-    h.o.held = true; h.o.stuck = null;
+    /* picking something up out of the tub puts it back in play */
+    h.o.held = true; h.o.stuck = null; h.o.stored = false;
     drag = { type: h.type, o: h.o, ox: h.o.x - x, oy: h.o.y - y };
   }
   prev = { x: x, y: y, t: performance.now() };
@@ -1066,7 +1139,15 @@ function move(x, y) {
 
 function up() {
   if (drag) {
-    if (drag.o) drag.o.held = false;
+    const o = drag.o;
+    if (o) {
+      o.held = false;
+      if (overTub(o.x, o.y)) {
+        o.stored = true; o.storedAt = performance.now(); o.vx = 0; o.vy = 0;
+        /* bits of paper clinging to it drop off */
+        for (const p of papers) if (p.stuck && p.stuck.t === o) p.stuck = null;
+      }
+    }
     if (drag.type === 'glove' && CFG.hand &&
         Math.hypot(glove.x - hand.x, glove.y - hand.y) < 55) {
       glove.worn = true;
