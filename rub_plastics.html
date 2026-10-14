@@ -100,6 +100,20 @@ const KINDS = [
   { id: 'PA',  x: 520, y: 250, color: '#8e7cc3' }
 ];
 
+/* ─── the storage tub ─────────────────────────────────────────── */
+/* Drop a plastic in the tub to set it aside. While it's in there it
+   doesn't push, pull, or rub on anything; drag it back out to use it. */
+const TUB_X = 20, TUB_W = 336, TUB_H = 108, TUB_Y = FLOOR - TUB_H;
+const TUB_SLOT_Y = FLOOR - 14 - SLAB_H / 2;
+function tubSlotX(i) { return TUB_X + 16 + SLAB_W / 2 + i * (SLAB_W + 12); }
+function overTub(x, y) {
+  return x > TUB_X - 10 && x < TUB_X + TUB_W + 10 && y > TUB_Y - 10 && y < FLOOR + 10;
+}
+function inPlay() { return slabs.filter(s => !s.stored); }
+function stored() {
+  return slabs.filter(s => s.stored).sort((a, b) => a.storedAt - b.storedAt);
+}
+
 /* ─── physics constants ────────────────────────────────────────── */
 /* Two charged slabs push or pull on each other by 1/r^2. A charged slab
    pulls a neutral one in by 1/r^3, which is weaker and dies off faster. */
@@ -115,7 +129,8 @@ function reset() {
   slabs = KINDS.map(k => ({
     kind: 'slab', id: k.id, color: k.color,
     x: k.x, y: k.y, vx: 0, vy: 0, q: 0, r: SLAB_R,
-    hx: SLAB_W / 2 + 4, hy: SLAB_H / 2 + 4, held: false
+    hx: SLAB_W / 2 + 4, hy: SLAB_H / 2 + 4, held: false,
+    stored: false, storedAt: 0
   }));
   /* The stick starts switched on, and it starts far enough from the
      plastics that a neutral one doesn't creep over to it on its own. */
@@ -170,7 +185,7 @@ function overlapping(a, b) {
 }
 
 function otherSlabUnder(o) {
-  for (const s of slabs) if (s !== o && overlapping(o, s)) return s;
+  for (const s of inPlay()) if (s !== o && overlapping(o, s)) return s;
   return null;
 }
 
@@ -193,10 +208,19 @@ function doRub(a, b) {
 function step(dt) {
   const sq = stickCharge();
 
-  for (const a of slabs) {
+  /* plastics in the tub slide into their places and sit still */
+  stored().forEach((s, i) => {
+    if (s.held) return;
+    const k = Math.min(1, dt * 12);
+    s.x += (tubSlotX(i) - s.x) * k; s.y += (TUB_SLOT_Y - s.y) * k;
+    s.vx = 0; s.vy = 0;
+  });
+
+  const live = inPlay();
+  for (const a of live) {
     if (a.held) { a.vx = 0; a.vy = 0; continue; }
     let ax = 0, ay = 0;
-    const others = slabs.filter(s => s !== a);
+    const others = live.filter(s => s !== a);
     if (sq) others.push({ x: stick.x, y: stick.y, q: sq, r: 24 });
     for (const b of others) {
       const dx = b.x - a.x, dy = b.y - a.y;
@@ -221,14 +245,24 @@ function step(dt) {
     if (a.x > W - a.hx) { a.x = W - a.hx; a.vx *= -0.4; }
     if (a.y < a.hy) { a.y = a.hy; a.vy *= -0.4; }
     if (a.y > FLOOR - a.hy - 4) { a.y = FLOOR - a.hy - 4; a.vy *= -0.4; }
+
+    /* a loose plastic bumps off the outside of the tub instead of
+       drifting in; only a drop puts one in there */
+    const l = TUB_X - a.hx, r = TUB_X + TUB_W + a.hx, t = TUB_Y - a.hy;
+    if (a.x > l && a.x < r && a.y > t) {
+      const pl = a.x - l, pr = r - a.x, pt = a.y - t;
+      if (pt <= pl && pt <= pr) { a.y = t; if (a.vy > 0) a.vy *= -0.4; }
+      else if (pl < pr) { a.x = l; if (a.vx > 0) a.vx *= -0.4; }
+      else { a.x = r; if (a.vx < 0) a.vx *= -0.4; }
+    }
   }
 
   /* Nothing passes through anything, except while you are scrubbing one
      slab across another. Plastics are insulators, so touching alone never
      moves any charge. */
-  for (let i = 0; i < slabs.length; i++) {
-    for (let j = i + 1; j < slabs.length; j++) {
-      const a = slabs[i], b = slabs[j];
+  for (let i = 0; i < live.length; i++) {
+    for (let j = i + 1; j < live.length; j++) {
+      const a = live[i], b = live[j];
       if (a.held || b.held) continue;
       const dx = b.x - a.x, dy = b.y - a.y;
       const d = Math.hypot(dx, dy) || 1e-6;
@@ -504,6 +538,23 @@ function drawResetIcon() {
   ctx.restore();
 }
 
+function drawTubBack() {
+  const hot = drag && drag.type === 'slab' && overTub(drag.o.x, drag.o.y);
+  ctx.save();
+  ctx.fillStyle = hot ? '#e4eef7' : '#eef1f4';
+  ctx.strokeStyle = hot ? '#6f8fae' : '#a9b3bc'; ctx.lineWidth = 2;
+  roundRect(TUB_X, TUB_Y, TUB_W, TUB_H, 10); ctx.fill(); ctx.stroke();
+  /* the rim, so it reads as an open tub */
+  ctx.fillStyle = hot ? '#c9d9e8' : '#d9dee3';
+  roundRect(TUB_X - 4, TUB_Y - 5, TUB_W + 8, 10, 5); ctx.fill(); ctx.stroke();
+  ctx.font = 'bold 15px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = hot ? '#4f6c88' : '#7d8992';
+  ctx.fillText('storage', TUB_X + TUB_W / 2, TUB_Y + 20);
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.restore();
+}
+
 function caption(text, x, y, hot) {
   ctx.font = 'bold 13px Arial';
   ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
@@ -525,9 +576,11 @@ function label(text, x, y) {
 function draw() {
   ctx.clearRect(0, 0, W, H);
   drawFloor();
+  drawTubBack();
   drawStick();
   drawScuff();
-  for (const s of slabs) drawSlab(s);
+  for (const s of stored()) if (!s.held) drawSlab(s);
+  for (const s of slabs) if (!s.stored || s.held) drawSlab(s);
   drawSparks();
 
   if (CFG.labels) {
@@ -576,6 +629,8 @@ function down(x, y) {
     drag = { type: 'stick', ox: stick.x - x, oy: stick.y - y };
   } else {
     h.o.held = true;
+    /* picking a plastic up out of the tub puts it back in play */
+    h.o.stored = false;
     drag = { type: 'slab', o: h.o, ox: h.o.x - x, oy: h.o.y - y };
   }
   prev = { x: x, y: y, t: performance.now() };
@@ -615,7 +670,13 @@ function move(x, y) {
 }
 
 function up() {
-  if (drag && drag.o) drag.o.held = false;
+  if (drag && drag.o) {
+    const o = drag.o;
+    o.held = false;
+    if (overTub(o.x, o.y)) {
+      o.stored = true; o.storedAt = performance.now(); o.vx = 0; o.vy = 0;
+    }
+  }
   drag = null; rub = null;
   canvas.style.cursor = 'default';
 }
