@@ -431,8 +431,9 @@ function drawStrip(b) {
 
   drawBodyCharge(b, 8, SH * 0.27, 4.3, 9);
 
-  /* the letter, written on in marker */
-  ctx.fillStyle = tint;
+  /* the letter, written on in black marker like the real strips. Only the
+     versions that draw charge color it. */
+  ctx.fillStyle = MODEL === 'none' ? '#1f1f1f' : tint;
   ctx.font = 'bold 21px Arial';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(b.letter, 0, -SH / 2 + 18);
@@ -597,7 +598,14 @@ function hitTest(x, y) {
   return null;
 }
 
+/* A quick click with no drag picks a thing up. It follows the pointer
+   until the next click puts it down, so a trackpad doesn't need a held
+   button. Dragging works as before, and touch screens just drag. */
+let carry = false, downAt = null, lastPt = { x: 0, y: 0 };
+
 function down(x, y) {
+  if (carry) { carry = false; up(false); return; }
+  downAt = { x: x, y: y, t: performance.now() };
   const h = hitTest(x, y);
   if (!h) { drag = null; return; }
   if (h.type === 'reset') { reset(); return; }
@@ -614,6 +622,7 @@ function down(x, y) {
 }
 
 function move(x, y) {
+  lastPt = { x: x, y: y };
   if (!drag) {
     const h = hitTest(x, y);
     hover = h ? h.type : null;
@@ -631,7 +640,13 @@ function move(x, y) {
   prev = { x: x, y: y, t: now };
 }
 
-function up() {
+function up(byMouse) {
+  if (byMouse && drag && !carry && downAt &&
+      performance.now() - downAt.t < 350 &&
+      Math.hypot(lastPt.x - downAt.x, lastPt.y - downAt.y) < 6) {
+    carry = true; downAt = null;
+    return;
+  }
   if (drag && drag.o) {
     const o = drag.o;
     o.held = false;
@@ -643,17 +658,17 @@ function up() {
   canvas.style.cursor = 'default';
 }
 
-canvas.addEventListener('mousedown', e => { const p = toLogical(e); down(p.x, p.y); });
+canvas.addEventListener('mousedown', e => { const p = toLogical(e); lastPt = p; down(p.x, p.y); });
 window.addEventListener('mousemove', e => { const p = toLogical(e); move(p.x, p.y); });
-window.addEventListener('mouseup', up);
+window.addEventListener('mouseup', () => up(true));
 canvas.addEventListener('touchstart', e => {
   e.preventDefault(); const p = toLogical(e.touches[0]); down(p.x, p.y);
 }, { passive: false });
 canvas.addEventListener('touchmove', e => {
   e.preventDefault(); const p = toLogical(e.touches[0]); move(p.x, p.y);
 }, { passive: false });
-canvas.addEventListener('touchend', e => { e.preventDefault(); up(); }, { passive: false });
-canvas.addEventListener('touchcancel', e => { e.preventDefault(); up(); }, { passive: false });
+canvas.addEventListener('touchend', e => { e.preventDefault(); up(false); }, { passive: false });
+canvas.addEventListener('touchcancel', e => { e.preventDefault(); up(false); }, { passive: false });
 
 /* ─── run ──────────────────────────────────────────────────────── */
 reset();

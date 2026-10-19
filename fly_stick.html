@@ -149,6 +149,7 @@ const KPAP = 4.8e6 * CFG.strength;   // charged stick pulls paper
 /* ─── state ────────────────────────────────────────────────────── */
 let stick, flyers, papers, hand, glove, sparks, flows, hover, drag, prev;
 let clock = 0;
+let pressedOnce = false;   /* the power button pulses until it's first pressed */
 
 function reset() {
   stick = { x: 280, y: 268, on: CFG.power, crackle: 0 };
@@ -223,14 +224,23 @@ function handTouch() {
   return { x: hand.x, y: hand.y + SPOON_TIP };
 }
 
-/* the whole wand is live, so the spoon anywhere along it drains the charge */
+/* the whole spoon is metal: bowl and handle, a vertical strip from the
+   top of the bowl to the end of the handle. Returns the nearest point of
+   the spoon if (px, py) is within `reach` of it. */
+const SPOON_TOP = SPOON_TIP + 4, SPOON_BOT = 56;
+function spoonContact(px, py, reach) {
+  if (!handTouch()) return null;
+  const cy = Math.max(hand.y + SPOON_TOP, Math.min(hand.y + SPOON_BOT, py));
+  return Math.hypot(px - hand.x, py - cy) < reach ? { x: hand.x, y: cy } : null;
+}
+
+/* the whole wand is live, so the spoon touching it anywhere drains the charge */
 function handOnWand() {
-  const ht = handTouch();
-  if (!ht) return null;
-  const dx = ht.x - stick.x, dy = ht.y - stick.y;
-  if (dx < -34 || dx > 34) return null;
-  if (dy < -34 || dy > WAND_LEN + 16) return null;
-  return ht;
+  if (!handTouch()) return null;
+  if (Math.abs(hand.x - stick.x) > 30) return null;
+  const lo = Math.max(hand.y + SPOON_TOP, stick.y - 34);
+  const hi = Math.min(hand.y + SPOON_BOT, stick.y + WAND_LEN + 16);
+  return lo <= hi ? { x: (hand.x + stick.x) / 2, y: (lo + hi) / 2 } : null;
 }
 
 function stickCharge() {
@@ -273,6 +283,32 @@ function step(dt) {
     o.rot *= 1 - k; o.vx = 0; o.vy = 0;
   }
 
+  /* ── flyers on each other: two charged flyers repel, a charged one pulls
+     an uncharged one, and when they touch the charge spreads over both ── */
+  const fa = flyers.map(() => ({ x: 0, y: 0 }));
+  for (let i = 0; i < flyers.length; i++) for (let j = i + 1; j < flyers.length; j++) {
+    const a = flyers[i], b = flyers[j];
+    if (a.stored || b.stored) continue;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    /* direction from the real separation (random if they sit exactly on
+       top of each other), strength capped as if never closer than 34 */
+    const d = Math.hypot(dx, dy), th = Math.random() * 6.283;
+    const ux = d > 0.5 ? dx / d : Math.cos(th), uy = d > 0.5 ? dy / d : Math.sin(th);
+    const r = Math.max(34, d);
+    if (r < 44 && Math.max(a.q, b.q) > 0.3 && Math.abs(a.q - b.q) > 0.1) {
+      const hi = a.q > b.q ? a : b, lo = hi === a ? b : a;
+      addFlow(hi.x, hi.y, lo.x, lo.y, 3);
+      addSpark((a.x + b.x) / 2, (a.y + b.y) / 2, 2);
+      a.q = b.q = (a.q + b.q) / 2;
+    }
+    let push = 0;
+    if (a.q > 0.02 && b.q > 0.02) push = Math.min(4000, KREP * a.q * b.q / (r * r));
+    else if ((a.q > 0.02 || b.q > 0.02) && r < 175)
+      push = -Math.min(2000, KATT * 0.5 * Math.max(a.q, b.q) / (r * r));
+    fa[i].x -= push * ux; fa[i].y -= push * uy;
+    fa[j].x += push * ux; fa[j].y += push * uy;
+  }
+
   /* ── flyers ── */
   for (const f of flyers) {
     /* charged: the loop springs open. uncharged: it sags flat again. */
@@ -288,8 +324,9 @@ function step(dt) {
     let r = Math.hypot(dx, dy) || 1;
 
     /* the bare spoon drains a charged flyer */
-    if (ht && f.q > 0.02 && Math.hypot(ht.x - f.x, ht.y - f.y) < f.r * 0.85 + 12) {
-      f.q = 0; addSpark(ht.x, ht.y, 3);
+    const sc = f.q > 0.02 ? spoonContact(f.x, f.y, f.r * 0.8 + 10) : null;
+    if (sc) {
+      f.q = 0; addSpark(sc.x, sc.y, 3);
       addFlow(f.x, f.y, hand.x, hand.y + 58, 4);
     }
 
@@ -307,7 +344,8 @@ function step(dt) {
     }
     if (f.held) continue;
 
-    let ax = 0, ay = G;
+    const fi = flyers.indexOf(f);
+    let ax = fa[fi].x, ay = G + fa[fi].y;
     if (sq > 0) {
       if (f.q > 0.02) {
         const a = Math.min(6000, KREP * f.q * sq / (r * r));
@@ -759,6 +797,27 @@ function drawPowerButton() {
     ctx.fillStyle = g;
     ctx.beginPath(); ctx.arc(bx, by, 20, 0, 7); ctx.fill();
   }
+  /* until it has been pressed once, a ring pulses around the button */
+  if (!pressedOnce) {
+    const k = (clock * 1.3) % 1;
+    ctx.beginPath(); ctx.arc(bx, by, 10 + 16 * k, 0, 7);
+    ctx.strokeStyle = 'rgba(220,50,30,' + (0.75 * (1 - k)).toFixed(3) + ')';
+    ctx.lineWidth = 2.5; ctx.stroke();
+  }
+  /* a tag beside it saying what it does; clicking the tag works too */
+  const tx = bx + 22, ty = by;
+  ctx.font = 'bold 14px Arial';
+  const txt = on ? 'click to turn off' : 'click to turn on';
+  const tw = ctx.measureText(txt).width;
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.strokeStyle = on ? '#c0392b' : '#8a5a50'; ctx.lineWidth = 1.5;
+  roundRect(tx, ty - 12, tw + 14, 24, 6); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(tx, ty - 5); ctx.lineTo(tx - 8, ty); ctx.lineTo(tx, ty + 5);
+  ctx.closePath(); ctx.fillStyle = ctx.strokeStyle; ctx.fill();
+  ctx.fillStyle = '#5a1a12'; ctx.textBaseline = 'middle';
+  ctx.fillText(txt, tx + 7, ty + 1);
+  ctx.textBaseline = 'alphabetic';
+
   ctx.beginPath(); ctx.arc(bx, by, hot ? 9 : 8.2, 0, 7);
   ctx.fillStyle = '#12506f'; ctx.fill();
   ctx.beginPath(); ctx.arc(bx, by, 6, 0, 7);
@@ -946,25 +1005,55 @@ function rulerShape() {
   ctx.restore();
 }
 
+/* a hand and a short length of sleeve gripping at (x, y), the arm leaning
+   by `lean` radians. The spoon and the ruler are tools somebody is
+   holding, not things in the experiment. */
+function grip(x, y, lean) {
+  ctx.save();
+  ctx.translate(x, y); ctx.rotate(lean);
+  ctx.lineJoin = 'round';
+  ctx.fillStyle = '#e6b48c'; ctx.strokeStyle = '#b07f5a'; ctx.lineWidth = 1.3;
+  ctx.beginPath();
+  ctx.moveTo(-13, 10); ctx.lineTo(-17, 120); ctx.lineTo(17, 120); ctx.lineTo(13, 10);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#4f79a8'; ctx.strokeStyle = '#3a5d84';
+  ctx.beginPath();
+  ctx.moveTo(-19, 72); ctx.lineTo(-21, 150); ctx.lineTo(21, 150); ctx.lineTo(19, 72);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#efc29b'; ctx.strokeStyle = '#b07f5a';
+  roundRect(-15, -15, 30, 34, 10); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = 'rgba(150,100,70,0.75)'; ctx.lineWidth = 1.1;
+  for (const k of [-7, 0, 7]) {
+    ctx.beginPath(); ctx.moveTo(-14, k); ctx.quadraticCurveTo(-2, k + 2, 9, k); ctx.stroke();
+  }
+  ctx.fillStyle = '#efc29b'; ctx.strokeStyle = '#b07f5a'; ctx.lineWidth = 1.3;
+  ctx.beginPath(); ctx.ellipse(6, -12, 11, 6, -0.35, 0, 7); ctx.fill(); ctx.stroke();
+  ctx.restore();
+}
+
 function drawHand() {
   if (!CFG.hand) return;
-  /* when the ruler is picked up, the spoon sits on it */
+  /* when the ruler is picked up, the spoon sits on it, and the hand holds
+     the ruler instead */
   if (glove.worn && CFG.glove) {
     ctx.save();
     ctx.translate(glove.x, glove.y + 12);
     ctx.rotate(Math.PI / 2);
     rulerShape();
     ctx.restore();
+    grip(glove.x, glove.y + 12 + RULER_L / 2 - 18, -0.35);
   }
   ctx.save(); ctx.translate(hand.x, hand.y);
   spoonShape();
   ctx.restore();
+  if (!glove.worn) grip(hand.x, hand.y + 50, -0.35);
 }
 
 function drawGlove() {
   if (!CFG.glove || glove.worn) return;
   ctx.save(); ctx.translate(glove.x, glove.y); ctx.rotate(-0.09);
   rulerShape();
+  grip(-RULER_L / 2 + 22, -2, Math.PI + 0.09);
   ctx.restore();
 }
 
@@ -1063,7 +1152,8 @@ function hitTest(x, y) {
   if (CFG.resetbtn && Math.hypot(x - RESET_X, y - RESET_Y) < RESET_R + 6)
     return { type: 'reset' };
   const b = btnPos();
-  if (Math.hypot(x - b.x, y - b.y) < 15)
+  if (Math.hypot(x - b.x, y - b.y) < 15 ||
+      (x > b.x + 12 && x < b.x + 160 && Math.abs(y - b.y) < 14))
     return { type: 'power' };
   if (CFG.glove) {
     if (glove.worn) {
@@ -1086,11 +1176,18 @@ function hitTest(x, y) {
   return null;
 }
 
+/* A quick click with no drag picks a thing up. It follows the pointer
+   until the next click puts it down, so a trackpad doesn't need a held
+   button. Dragging works as before, and touch screens just drag. */
+let carry = false, downAt = null, lastPt = { x: 0, y: 0 };
+
 function down(x, y) {
+  if (carry) { carry = false; up(false); return; }
+  downAt = { x: x, y: y, t: performance.now() };
   const h = hitTest(x, y);
   if (!h) { drag = null; return; }
   if (h.type === 'reset') { reset(); return; }
-  if (h.type === 'power') { stick.on = !stick.on; addSpark(stick.x, stick.y, 2); return; }
+  if (h.type === 'power') { stick.on = !stick.on; pressedOnce = true; addSpark(stick.x, stick.y, 2); return; }
 
   if (h.type === 'glove') {
     glove.worn = false;
@@ -1109,6 +1206,7 @@ function down(x, y) {
 }
 
 function move(x, y) {
+  lastPt = { x: x, y: y };
   if (!drag) {
     const h = hitTest(x, y);
     hover = h ? h.type : null;
@@ -1137,7 +1235,13 @@ function move(x, y) {
   }
 }
 
-function up() {
+function up(byMouse) {
+  if (byMouse && drag && !carry && downAt &&
+      performance.now() - downAt.t < 350 &&
+      Math.hypot(lastPt.x - downAt.x, lastPt.y - downAt.y) < 6) {
+    carry = true; downAt = null;
+    return;
+  }
   if (drag) {
     const o = drag.o;
     if (o) {
@@ -1157,17 +1261,17 @@ function up() {
   canvas.style.cursor = 'default';
 }
 
-canvas.addEventListener('mousedown', e => { const p = toLogical(e); down(p.x, p.y); });
+canvas.addEventListener('mousedown', e => { const p = toLogical(e); lastPt = p; down(p.x, p.y); });
 window.addEventListener('mousemove', e => { const p = toLogical(e); move(p.x, p.y); });
-window.addEventListener('mouseup', up);
+window.addEventListener('mouseup', () => up(true));
 canvas.addEventListener('touchstart', e => {
   e.preventDefault(); const p = toLogical(e.touches[0]); down(p.x, p.y);
 }, { passive: false });
 canvas.addEventListener('touchmove', e => {
   e.preventDefault(); const p = toLogical(e.touches[0]); move(p.x, p.y);
 }, { passive: false });
-canvas.addEventListener('touchend', e => { e.preventDefault(); up(); }, { passive: false });
-canvas.addEventListener('touchcancel', e => { e.preventDefault(); up(); }, { passive: false });
+canvas.addEventListener('touchend', e => { e.preventDefault(); up(false); }, { passive: false });
+canvas.addEventListener('touchcancel', e => { e.preventDefault(); up(false); }, { passive: false });
 
 /* ─── run ──────────────────────────────────────────────────────── */
 reset();
