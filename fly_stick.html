@@ -623,8 +623,8 @@ function drawPaperCharge(p) {
 
 /* Charge on the move. In the one-fluid picture it runs along as a band of
    the same blue stuff, from the charged object to the other one. In the
-   two-fluid one it is negative charge running the other way, onto the
-   positive object, so it goes as a couple of red signs heading back. */
+   two-fluid one it's a gray streak with no direction, since at that point
+   in the lesson students can't tell which kind of charge moved. */
 function drawFlows() {
   for (const fl of flows) {
     if (fl.t < 0) continue;
@@ -634,10 +634,23 @@ function drawFlows() {
                      fl.y0 + (fl.y1 - fl.y0) * u + fl.ay * Math.sin(Math.PI * u)];
 
     if (MODEL === 'two') {
-      const h = at(1 - Math.min(1, p * 1.2));
-      sign(h[0], h[1], false, 4.0);
-      const b = at(1 - Math.max(0, p * 1.2 - 0.22));
-      sign(b[0], b[1], false, 3.4);
+      /* The lesson can't tell yet whether negative charge moves one way or
+         positive charge the other, so the picture doesn't either: a gray
+         spark-like streak along the whole path that brightens and fades,
+         with no sign and no direction. The marks on each object update. */
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      const widths = [15, 8, 3.5];
+      const alphas = [0.10, 0.22, 0.55];
+      for (let k = 0; k < 3; k++) {
+        ctx.strokeStyle = 'rgba(110,110,118,' + (alphas[k] * fade).toFixed(3) + ')';
+        ctx.lineWidth = widths[k];
+        ctx.beginPath();
+        for (let i = 0; i <= 8; i++) {
+          const q = at(i / 8);
+          if (i) ctx.lineTo(q[0], q[1]); else ctx.moveTo(q[0], q[1]);
+        }
+        ctx.stroke();
+      }
       continue;
     }
 
