@@ -165,7 +165,7 @@ function reset() {
     papers.push({ x: 600 + i * 26, y: FLOOR - 5, vx: 0, vy: 0, seed: 13 + i * 19,
                   rot: (i * 1.7) % 1.4 - 0.7, stuck: null, held: false,
                   stored: false, storedAt: 0 });
-  hand  = { x: 835, y: 330 };          /* the spoon */
+  hand  = { x: 760, y: 330 };          /* the spoon */
   glove = { x: 782, y: 462, worn: false };  /* the plastic ruler */
   sparks = []; flows = [];
   drag = null; hover = null;
@@ -217,30 +217,33 @@ function addSpark(x, y, n) {
   sparks.push({ x: x, y: y, segs: segs, life: 0.22, t: 0.22 });
 }
 
+/* The spoon and the ruler always lie flat, held by a hand that comes in
+   from the right on a level arm, so nothing hangs down over the stick.
+   The spoon's bowl points left and its handle runs right. */
+
 /* the bare spoon lets charge run away to ground; resting on the
    plastic ruler, it does not */
 function handTouch() {
   if (!CFG.hand || glove.worn) return null;
-  return { x: hand.x, y: hand.y + SPOON_TIP };
+  return { x: hand.x + SPOON_TIP, y: hand.y };
 }
 
-/* the whole spoon is metal: bowl and handle, a vertical strip from the
-   top of the bowl to the end of the handle. Returns the nearest point of
-   the spoon if (px, py) is within `reach` of it. */
+/* the whole spoon is metal: bowl and handle, a level strip from the tip
+   of the bowl to the end of the handle. Returns the nearest point of the
+   spoon if (px, py) is within `reach` of it. */
 const SPOON_TOP = SPOON_TIP + 4, SPOON_BOT = 56;
 function spoonContact(px, py, reach) {
   if (!handTouch()) return null;
-  const cy = Math.max(hand.y + SPOON_TOP, Math.min(hand.y + SPOON_BOT, py));
-  return Math.hypot(px - hand.x, py - cy) < reach ? { x: hand.x, y: cy } : null;
+  const cx = Math.max(hand.x + SPOON_TOP, Math.min(hand.x + SPOON_BOT, px));
+  return Math.hypot(px - cx, py - hand.y) < reach ? { x: cx, y: hand.y } : null;
 }
 
 /* the whole wand is live, so the spoon touching it anywhere drains the charge */
 function handOnWand() {
   if (!handTouch()) return null;
-  if (Math.abs(hand.x - stick.x) > 30) return null;
-  const lo = Math.max(hand.y + SPOON_TOP, stick.y - 34);
-  const hi = Math.min(hand.y + SPOON_BOT, stick.y + WAND_LEN + 16);
-  return lo <= hi ? { x: (hand.x + stick.x) / 2, y: (lo + hi) / 2 } : null;
+  if (stick.x < hand.x + SPOON_TOP - 18 || stick.x > hand.x + SPOON_BOT + 18) return null;
+  if (hand.y < stick.y - 34 - 14 || hand.y > stick.y + WAND_LEN + 16 + 14) return null;
+  return { x: stick.x, y: hand.y };
 }
 
 function stickCharge() {
@@ -262,7 +265,7 @@ function step(dt) {
   /* spoon shorting out the stick */
   if (stick.on && sq === 0 && onWand && drainCd === 0) {
     addSpark(onWand.x, onWand.y, 3); drainCd = 0.28;
-    addFlow(onWand.x, onWand.y, hand.x, hand.y + 58, 3);
+    addFlow(onWand.x, onWand.y, hand.x + 58, hand.y, 3);
   }
 
   /* crackle at the tip while the stick is charged */
@@ -327,7 +330,18 @@ function step(dt) {
     const sc = f.q > 0.02 ? spoonContact(f.x, f.y, f.r * 0.8 + 10) : null;
     if (sc) {
       f.q = 0; addSpark(sc.x, sc.y, 3);
-      addFlow(f.x, f.y, hand.x, hand.y + 58, 4);
+      addFlow(f.x, f.y, hand.x + 58, hand.y, 4);
+    }
+    /* the spoon is solid: a flyer that runs into it bounces off instead of
+       passing through (that's the "ring" in Franklin's bells) */
+    const reachS = f.r * 0.8 + 8;
+    const hs = !f.held ? spoonContact(f.x, f.y, reachS) : null;
+    if (hs) {
+      let nx = f.x - hs.x, ny = f.y - hs.y;
+      const m = Math.hypot(nx, ny) || 1; nx /= m; ny /= m;
+      f.x = hs.x + nx * reachS; f.y = hs.y + ny * reachS;
+      const vn = f.vx * nx + f.vy * ny;
+      if (vn < 0) { f.vx -= 1.5 * vn * nx; f.vy -= 1.5 * vn * ny; }
     }
 
     /* touching the charged tip loads the flyer up with the same charge */
@@ -917,7 +931,7 @@ function drawPaper(p) {
   ctx.restore();
 }
 
-/* a metal spoon, bowl up. metal conducts, so the bare spoon carries
+/* a metal spoon, drawn bowl up (drawHand turns it to lie flat). metal conducts, so the bare spoon carries
    charge away the moment it touches something. */
 function spoonShape() {
   const BY = SPOON_BY, RX = SPOON_RX, RY = SPOON_RY;
@@ -1049,24 +1063,25 @@ function drawHand() {
   /* when the ruler is picked up, the spoon sits on it, and the hand holds
      the ruler instead */
   if (glove.worn && CFG.glove) {
+    /* the spoon lies on the flat ruler, and the hand holds the ruler */
+    const rx = hand.x + 14, ry = hand.y + 14 + RULER_W / 2;
     ctx.save();
-    ctx.translate(glove.x, glove.y + 12);
-    ctx.rotate(Math.PI / 2);
+    ctx.translate(rx, ry);
     rulerShape();
     ctx.restore();
-    grip(glove.x, glove.y + 12 + RULER_L / 2 - 18, -0.35);
+    grip(rx + RULER_L / 2 - 22, ry, -Math.PI / 2);
   }
-  ctx.save(); ctx.translate(hand.x, hand.y);
+  ctx.save(); ctx.translate(hand.x, hand.y); ctx.rotate(-Math.PI / 2);
   spoonShape();
   ctx.restore();
-  if (!glove.worn) grip(hand.x, hand.y + 50, -0.35);
+  if (!glove.worn) grip(hand.x + 50, hand.y, -Math.PI / 2);
 }
 
 function drawGlove() {
   if (!CFG.glove || glove.worn) return;
-  ctx.save(); ctx.translate(glove.x, glove.y); ctx.rotate(-0.09);
+  ctx.save(); ctx.translate(glove.x, glove.y);
   rulerShape();
-  grip(-RULER_L / 2 + 22, -2, Math.PI + 0.09);
+  grip(RULER_L / 2 - 22, 0, -Math.PI / 2);
   ctx.restore();
 }
 
@@ -1176,7 +1191,7 @@ function hitTest(x, y) {
       return { type: 'glove' };
     }
   }
-  if (CFG.hand && Math.abs(x - hand.x) < 26 && y > hand.y - 62 && y < hand.y + 70)
+  if (CFG.hand && Math.abs(y - hand.y) < 26 && x > hand.x - 62 && x < hand.x + 70)
     return { type: 'hand' };
   for (let i = flyers.length - 1; i >= 0; i--)
     if (Math.hypot(x - flyers[i].x, y - flyers[i].y) < flyers[i].r + 6)
