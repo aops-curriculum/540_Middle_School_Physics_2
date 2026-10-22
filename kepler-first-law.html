@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kepler's First Law</title>
+<style>
+  /* Page fills the 500 x 300 iframe exactly, with no scrollbars. */
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #000;
+    overflow: hidden;
+  }
+  body {
+    width: 500px;
+    height: 300px;
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    color: #d8dde6;
+  }
+  canvas { display: block; }
+
+  /* Control strip: 36 px tall, sits under the 264 px drawing area. */
+  .controls {
+    height: 36px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 18px;
+    border-top: 1px solid #222;
+  }
+  .controls label { font-size: 14px; }
+  .controls input[type="range"] {
+    flex: 1;                 /* slider stretches to fill leftover width */
+    accent-color: #7fb2ff;   /* tints the slider to match the planet */
+  }
+  .controls input[type="range"]:focus-visible {
+    outline: 2px solid #7fb2ff;
+    outline-offset: 3px;
+  }
+  .readout {
+    font-size: 15px;
+    min-width: 64px;
+    text-align: right;
+    font-variant-numeric: tabular-nums; /* digits keep equal width, so the text doesn't jiggle */
+  }
+  .readout i {
+    font-family: "Times New Roman", Times, serif;
+    font-size: 17px;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="sky"></canvas>
+
+<div class="controls">
+  <label for="ecc">Eccentricity</label>
+  <input type="range" id="ecc" min="0" max="0.9" step="0.01" value="0.5">
+  <span class="readout"><i>e</i> = <span id="eValue">0.50</span></span>
+</div>
+
+<script>
+// ---------- Canvas setup ----------
+const W = 500;   // drawing width in CSS pixels
+const H = 264;   // drawing height (300 minus the 36 px control strip)
+
+const canvas = document.getElementById("sky");
+const ctx = canvas.getContext("2d");
+
+// Draw at the screen's true pixel density so edges stay sharp on high-resolution displays.
+const dpr = window.devicePixelRatio || 1;
+canvas.width = W * dpr;
+canvas.height = H * dpr;
+canvas.style.width = W + "px";
+canvas.style.height = H + "px";
+ctx.scale(dpr, dpr);
+
+// ---------- Orbit constants ----------
+const A = 120;          // semi-major axis in pixels (held fixed, so the period is fixed too)
+const CX = W / 2;       // center of the ellipse
+const CY = H / 2;
+const PERIOD = 6;       // seconds per orbit
+const SUN_R = 7;        // sun radius in pixels
+const PLANET_R = 4.5;   // planet radius in pixels
+
+// ---------- Slider ----------
+const slider = document.getElementById("ecc");
+const eValue = document.getElementById("eValue");
+let e = parseFloat(slider.value);
+
+slider.addEventListener("input", () => {
+  e = parseFloat(slider.value);
+  eValue.textContent = e.toFixed(2);
+});
+
+// ---------- Kepler's equation ----------
+// Given the mean anomaly M (which grows steadily with time), find the
+// eccentric anomaly E satisfying  M = E - e sin E,  using Newton's method.
+function solveKepler(M, e) {
+  let E = (e < 0.8) ? M : Math.PI;   // starting guess
+  for (let i = 0; i < 15; i++) {
+    const f  = E - e * Math.sin(E) - M;   // how far off we are
+    const fp = 1 - e * Math.cos(E);       // slope of f with respect to E
+    E = E - f / fp;                       // Newton step
+    if (Math.abs(f) < 1e-10) break;
+  }
+  return E;
+}
+
+// ---------- Drawing ----------
+let M = 0;   // mean anomaly, in radians
+
+function draw() {
+  const b = A * Math.sqrt(1 - e * e);   // semi-minor axis
+  const c = A * e;                      // center-to-focus distance
+
+  // Black background
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, W, H);
+
+  // Orbit path
+  ctx.strokeStyle = "rgba(200, 210, 230, 0.45)";
+  ctx.lineWidth = 1.25;
+  ctx.beginPath();
+  ctx.ellipse(CX, CY, A, b, 0, 0, 2 * Math.PI);
+  ctx.stroke();
+
+  // Sun at the right-hand focus, with a soft glow
+  const sx = CX + c;
+  const sy = CY;
+  const glow = ctx.createRadialGradient(sx, sy, 0, sx, sy, SUN_R * 3);
+  glow.addColorStop(0, "rgba(255, 209, 102, 0.55)");
+  glow.addColorStop(1, "rgba(255, 209, 102, 0)");
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(sx, sy, SUN_R * 3, 0, 2 * Math.PI);
+  ctx.fill();
+
+  ctx.fillStyle = "#ffd166";
+  ctx.beginPath();
+  ctx.arc(sx, sy, SUN_R, 0, 2 * Math.PI);
+  ctx.fill();
+
+  // Planet position from the eccentric anomaly.
+  // Minus sign on y because canvas y points downward; this makes the orbit counterclockwise.
+  const E = solveKepler(M, e);
+  const px = CX + A * Math.cos(E);
+  const py = CY - b * Math.sin(E);
+
+  ctx.fillStyle = "#6fa8ff";
+  ctx.beginPath();
+  ctx.arc(px, py, PLANET_R, 0, 2 * Math.PI);
+  ctx.fill();
+}
+
+// ---------- Animation loop ----------
+let lastTime = null;
+
+function frame(now) {
+  if (lastTime === null) lastTime = now;
+  const dt = (now - lastTime) / 1000;   // seconds since the previous frame
+  lastTime = now;
+
+  M = (M + 2 * Math.PI * dt / PERIOD) % (2 * Math.PI);
+
+  draw();
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

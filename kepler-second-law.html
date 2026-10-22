@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kepler's Second Law: Equal Times</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #000;
+    overflow: hidden;
+  }
+  body {
+    width: 500px;
+    height: 300px;
+  }
+  canvas {
+    display: block;
+    touch-action: none;   /* stops touchscreens from scrolling while dragging */
+  }
+</style>
+</head>
+<body>
+
+<canvas id="sky"></canvas>
+
+<script>
+// ---------- Canvas setup ----------
+const W = 500, H = 300;
+const canvas = document.getElementById("sky");
+const ctx = canvas.getContext("2d");
+const dpr = window.devicePixelRatio || 1;
+canvas.width = W * dpr;
+canvas.height = H * dpr;
+canvas.style.width = W + "px";
+canvas.style.height = H + "px";
+ctx.scale(dpr, dpr);
+
+// ---------- Orbit constants ----------
+const ECC = 0.5;
+const A = 140;                          // semi-major axis (pixels)
+const B = A * Math.sqrt(1 - ECC * ECC); // semi-minor axis
+const C = A * ECC;                      // center-to-focus distance
+const CX = 250, CY = 150;               // ellipse centered in the frame
+const SX = CX + C, SY = CY;             // sun at the right-hand focus
+const PERIOD = 8;                       // seconds per orbit
+const TWO_PI = 2 * Math.PI;
+
+// Time span of each sector, as a fraction of the period.
+const TIME_FRAC = 0.10;
+const DM = TIME_FRAC * TWO_PI;          // the same span, as a change in mean anomaly
+
+const SUN_R = 8;
+const PLANET_R = 5;
+const DOT_R = 4;                        // endpoint dots
+const GRAB_DIST = 14;                   // how close a click must be to grab a dot
+
+const FONT = "12px 'Helvetica Neue', Arial, sans-serif";
+
+// Colors: [fill, edge, label] for each sector
+const COLORS = [
+  ["rgba(185, 166, 255, 0.30)", "rgba(185, 166, 255, 0.75)", "#c3b3ff"],
+  ["rgba(102, 214, 196, 0.30)", "rgba(102, 214, 196, 0.75)", "#74dcc9"]
+];
+
+// ---------- Helper functions ----------
+function posFromE(E) {
+  return { x: CX + A * Math.cos(E), y: CY - B * Math.sin(E) };
+}
+function meanAnomaly(E) {
+  return E - ECC * Math.sin(E);
+}
+function wrap(angle) {
+  angle = angle % TWO_PI;
+  return angle < 0 ? angle + TWO_PI : angle;
+}
+function solveKepler(M) {
+  M = wrap(M);
+  let E = M;
+  for (let i = 0; i < 15; i++) {
+    const f = E - ECC * Math.sin(E) - M;
+    E -= f / (1 - ECC * Math.cos(E));
+    if (Math.abs(f) < 1e-10) break;
+  }
+  return E;
+}
+
+// Mean anomaly of the orbit point in the direction of p, as seen from the sun.
+// Step 1: the angle from the sun to the pointer (the "true anomaly", ν).
+// Step 2: convert ν to the eccentric anomaly E with the standard relation
+//         tan(E/2) = sqrt((1 - e)/(1 + e)) · tan(ν/2).
+// Step 3: convert E to the mean anomaly M.
+function pointerMeanAnomaly(p) {
+  const nu = Math.atan2(-(p.y - SY), p.x - SX);
+  const E = 2 * Math.atan2(Math.sqrt(1 - ECC) * Math.sin(nu / 2),
+                           Math.sqrt(1 + ECC) * Math.cos(nu / 2));
+  return meanAnomaly(E);
+}
+
+// ---------- The two sectors ----------
+// Each sector is stored as the mean anomaly where it starts; it ends at start + DM.
+// Sector 1 starts centered on perihelion, sector 2 on aphelion.
+const sectors = [-DM / 2, Math.PI - DM / 2];
+
+function sectorEnds(s) {
+  return [solveKepler(sectors[s]), solveKepler(sectors[s] + DM)];
+}
+
+// Outline of sector s: the sun, then points along the arc.
+function sectorPoints(s) {
+  const [E1, E2] = sectorEnds(s);
+  const span = wrap(E2 - E1);
+  const n = Math.max(2, Math.ceil(span / TWO_PI * 720));
+  const pts = [{ x: SX, y: SY }];
+  for (let i = 0; i <= n; i++) {
+    pts.push(posFromE(E1 + span * i / n));
+  }
+  return pts;
+}
+
+// Shoelace formula for polygon area.
+function polygonArea(pts) {
+  let sum = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const q = pts[(i + 1) % pts.length];
+    sum += p.x * q.y - q.x * p.y;
+  }
+  return Math.abs(sum) / 2;
+}
+
+// Is point p inside the polygon? (ray-casting test)
+function pointInPolygon(p, pts) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const a = pts[i], b = pts[j];
+    const crosses = (a.y > p.y) !== (b.y > p.y);
+    if (crosses && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+// ---------- Dragging ----------
+let dragging = -1;   // index of the sector being dragged, or -1
+let grabOffset = 0;  // how far (in mean anomaly) the grab point is from the sector's start
+
+function pointerPos(event) {
+  const rect = canvas.getBoundingClientRect();
+  return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+}
+
+// Which sector is under the pointer? Dots are checked first, then
+// sector bodies, topmost (sector 2, drawn last) before sector 1.
+function sectorUnder(p) {
+  for (let s = 0; s < 2; s++) {
+    for (const E of sectorEnds(s)) {
+      const h = posFromE(E);
+      if (Math.hypot(p.x - h.x, p.y - h.y) < GRAB_DIST) return s;
+    }
+  }
+  for (let s = 1; s >= 0; s--) {
+    if (pointInPolygon(p, sectorPoints(s))) return s;
+  }
+  return -1;
+}
+
+canvas.addEventListener("pointerdown", (event) => {
+  const p = pointerPos(event);
+  const s = sectorUnder(p);
+  if (s >= 0) {
+    dragging = s;
+    grabOffset = pointerMeanAnomaly(p) - sectors[s];
+    canvas.setPointerCapture(event.pointerId);
+    canvas.style.cursor = "grabbing";
+  }
+});
+
+canvas.addEventListener("pointermove", (event) => {
+  const p = pointerPos(event);
+  if (dragging >= 0) {
+    // Keep the same part of the sector under the pointer.
+    sectors[dragging] = pointerMeanAnomaly(p) - grabOffset;
+  } else {
+    canvas.style.cursor = sectorUnder(p) >= 0 ? "grab" : "default";
+  }
+});
+
+function endDrag() {
+  dragging = -1;
+  canvas.style.cursor = "default";
+}
+canvas.addEventListener("pointerup", endDrag);
+canvas.addEventListener("pointercancel", endDrag);
+
+// ---------- Drawing ----------
+let M = 0;   // planet's mean anomaly
+
+function drawSector(s) {
+  const pts = sectorPoints(s);
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+  ctx.closePath();
+  ctx.fillStyle = COLORS[s][0];
+  ctx.fill();
+  ctx.strokeStyle = COLORS[s][1];
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+// "10% time" label, just outside the orbit at the time-midpoint of the arc.
+function drawTimeLabel(s) {
+  const text = Math.round(100 * TIME_FRAC) + "% time";
+  const w = ctx.measureText(text).width;
+  const h = 12;
+  const mid = posFromE(solveKepler(sectors[s] + DM / 2));
+  const dx = mid.x - CX, dy = mid.y - CY;
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len, uy = dy / len;
+  // Push the label out far enough that its nearest edge clears the orbit by 6 px.
+  const dist = 6 + Math.abs(ux) * w / 2 + Math.abs(uy) * h / 2;
+  ctx.fillStyle = COLORS[s][2];
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, mid.x + ux * dist, mid.y + uy * dist);
+}
+
+// "10% area" label inside the sector, turned to run along the sector.
+function drawAreaLabel(s) {
+  const frac = polygonArea(sectorPoints(s)) / (Math.PI * A * B);
+  const text = Math.round(100 * frac) + "% area";
+  const mid = posFromE(solveKepler(sectors[s] + DM / 2));
+  const x = SX + 0.62 * (mid.x - SX);
+  const y = SY + 0.62 * (mid.y - SY);
+  let angle = Math.atan2(mid.y - SY, mid.x - SX);
+  // Flip text that would otherwise read upside down.
+  if (angle > Math.PI / 2) angle -= Math.PI;
+  if (angle < -Math.PI / 2) angle += Math.PI;
+
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.fillStyle = "#ffffff";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, 0, 0);
+  ctx.restore();
+}
+
+function draw() {
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, W, H);
+
+  drawSector(0);
+  drawSector(1);
+
+  // Orbit path
+  ctx.strokeStyle = "rgba(200, 210, 230, 0.45)";
+  ctx.lineWidth = 1.25;
+  ctx.beginPath();
+  ctx.ellipse(CX, CY, A, B, 0, 0, TWO_PI);
+  ctx.stroke();
+
+  // Sun
+  const glow = ctx.createRadialGradient(SX, SY, 0, SX, SY, SUN_R * 3);
+  glow.addColorStop(0, "rgba(255, 209, 102, 0.55)");
+  glow.addColorStop(1, "rgba(255, 209, 102, 0)");
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(SX, SY, SUN_R * 3, 0, TWO_PI);
+  ctx.fill();
+  ctx.fillStyle = "#ffd166";
+  ctx.beginPath();
+  ctx.arc(SX, SY, SUN_R, 0, TWO_PI);
+  ctx.fill();
+
+  // Planet
+  const pl = posFromE(solveKepler(M));
+  ctx.fillStyle = "#6fa8ff";
+  ctx.beginPath();
+  ctx.arc(pl.x, pl.y, PLANET_R, 0, TWO_PI);
+  ctx.fill();
+
+  // Endpoint dots and labels
+  ctx.font = FONT;
+  for (let s = 0; s < 2; s++) {
+    ctx.fillStyle = "#ffffff";
+    for (const E of sectorEnds(s)) {
+      const h = posFromE(E);
+      ctx.beginPath();
+      ctx.arc(h.x, h.y, DOT_R, 0, TWO_PI);
+      ctx.fill();
+    }
+    drawTimeLabel(s);
+    drawAreaLabel(s);
+  }
+}
+
+// ---------- Animation loop ----------
+let lastTime = null;
+
+function frame(now) {
+  if (lastTime === null) lastTime = now;
+  const dt = (now - lastTime) / 1000;
+  lastTime = now;
+  M = (M + TWO_PI * dt / PERIOD) % TWO_PI;
+  draw();
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

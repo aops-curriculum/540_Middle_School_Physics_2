@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Projectile launcher</title>
+<style>
+  /* ---------- Color tokens (light mode) ---------- */
+  :root {
+    color-scheme: light;
+    --page:        #f4f8fb;
+    --sky-top:     #c9e2f2;
+    --sky-bottom:  #eef6fa;
+    --grass:       #6f9a4a;
+    --soil:        #6b543c;
+    --tube:        #34495e;
+    --tube-edge:   #1d2b38;
+    --mount:       #59626b;
+    --ball:        #f2a900;
+    --ball-edge:   #7a5300;
+    --ink:         #1c2833;
+    --muted:       #4f6170;
+    --ruler:       #f3ead9;
+    --guide:       #2f4a63;
+    --marker:      #c23b22;
+    --accent:      #1f6fb2;
+    --accent-ink:  #ffffff;
+    --panel:       #ffffff;
+    --panel-edge:  #d5e1ea;
+  }
+  /* ---------- Color tokens (dark mode) ---------- */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page:        #121b23;
+      --sky-top:     #0f2233;
+      --sky-bottom:  #1d3447;
+      --grass:       #4d7034;
+      --soil:        #3f3223;
+      --tube:        #8fa6bc;
+      --tube-edge:   #d3dee8;
+      --mount:       #a3adb6;
+      --ball:        #ffbf33;
+      --ball-edge:   #ffe3a3;
+      --ink:         #e6edf3;
+      --muted:       #a9b8c5;
+      --ruler:       #e9dfcc;
+      --guide:       #b9cde0;
+      --marker:      #ff7a5c;
+      --accent:      #4a9be0;
+      --accent-ink:  #0b1620;
+      --panel:       #1a2630;
+      --panel-edge:  #2c3b48;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--page); color: var(--ink); }
+  body { font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+
+  .sim { max-width: 960px; margin: 0 auto; padding: 8px; }
+
+  .stage {
+    width: 100%;
+    aspect-ratio: 2 / 1;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 18px;
+    margin-top: 8px;
+    padding: 10px 14px;
+    background: var(--panel);
+    border: 1px solid var(--panel-edge);
+    border-radius: 6px;
+  }
+  .angle-group { display: flex; align-items: center; gap: 10px; flex: 1 1 280px; }
+  .angle-group label { white-space: nowrap; }
+  .angle-group output {
+    display: inline-block;
+    min-width: 3ch;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 120px; }
+
+  button {
+    font: inherit;
+    font-weight: 600;
+    padding: 8px 22px;
+    border: none;
+    border-radius: 4px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { filter: brightness(1.08); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+
+  .readout {
+    flex-basis: 100%;
+    margin: 0;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .readout strong { color: var(--ink); }
+</style>
+</head>
+<body>
+<main class="sim">
+  <div class="stage" id="stage">
+    <canvas id="scene" role="img"
+            aria-label="A launch tube hinged at ground level fires a ball over level ground. A meter scale starts directly below the tube's opening."></canvas>
+  </div>
+
+  <div class="controls">
+    <div class="angle-group">
+      <label for="angle">Launch angle <output id="angleOut" for="angle">45°</output></label>
+      <input id="angle" type="range" min="0" max="90" step="1" value="45">
+    </div>
+    <button id="launch" type="button">Launch</button>
+    <p class="readout" id="readout" aria-live="polite"></p>
+  </div>
+</main>
+
+<script>
+/* =========================================================
+   PHYSICS SETTINGS (SI units: meters, seconds)
+   ========================================================= */
+const V0 = 7.0;          // launch speed, m/s
+const G  = 9.8;          // gravitational acceleration, m/s^2
+
+/* Sizes of drawn objects, in meters */
+const TUBE_LENGTH = 0.45;
+const BALL_R      = 0.07;
+const TUBE_WIDTH  = 2 * BALL_R;   // ball fits snugly; tube lies flat on the ground at 0°
+
+/* COORDINATE SYSTEM
+   All positions refer to the CENTER of the ball.
+   y = 0 is the height of the ball's center when it rests on the ground,
+   so the drawn ground line is one ball radius lower (y = -BALL_R).
+   The pivot (back end of the tube's center line) is at (0, 0), so a tube
+   lying flat at 0° rests on the ground, and the launch height of the ball
+   is simply TUBE_LENGTH * sin(angle). */
+const GROUND_Y = -BALL_R;
+
+/* The rectangle of the world (in meters) that must fit on screen. */
+const WORLD = { xMin: -0.35, xMax: 6.65, yMin: -0.45, yMax: 3.1 };
+
+/* =========================================================
+   PAGE ELEMENTS
+   ========================================================= */
+const stage     = document.getElementById("stage");
+const canvas    = document.getElementById("scene");
+const ctx       = canvas.getContext("2d");
+const slider    = document.getElementById("angle");
+const angleOut  = document.getElementById("angleOut");
+const launchBtn = document.getElementById("launch");
+const readout   = document.getElementById("readout");
+
+/* =========================================================
+   SIMULATION STATE
+   ========================================================= */
+let angleDeg   = Number(slider.value);
+let flying     = false;
+let launchTime = 0;      // timestamp (ms) when the current shot began
+let flightTime = 0;      // total time in the air for the current shot (s)
+let vx = 0, vy = 0;      // velocity components for the current shot (m/s)
+let start = { x: 0, y: 0 };   // muzzle position at the moment of launch
+let ball  = { x: 0, y: 0 };
+let lastLanding = null;  // x-position (m) where the previous shot landed
+
+/* Where the muzzle (open end of the tube) is for the current angle */
+function muzzle() {
+  const theta = angleDeg * Math.PI / 180;
+  return { x: TUBE_LENGTH * Math.cos(theta), y: TUBE_LENGTH * Math.sin(theta) };
+}
+
+/* =========================================================
+   CONVERTING METERS TO SCREEN PIXELS
+   ========================================================= */
+let W = 0, H = 0;        // canvas size in CSS pixels
+let scale = 1;           // pixels per meter
+let offX = 0, offY = 0;  // padding that centers the world on the canvas
+
+function computeLayout() {
+  const worldW = WORLD.xMax - WORLD.xMin;
+  const worldH = WORLD.yMax - WORLD.yMin;
+  scale = Math.min(W / worldW, H / worldH);
+  offX = (W - worldW * scale) / 2;
+  offY = (H - worldH * scale) / 2;
+}
+
+function px(x) { return offX + (x - WORLD.xMin) * scale; }
+function py(y) { return offY + (WORLD.yMax - y) * scale; }   // screen y grows downward
+
+/* =========================================================
+   RESIZING (keeps the drawing sharp at any iframe size)
+   ========================================================= */
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  W = stage.clientWidth;
+  H = stage.clientHeight;
+  canvas.width  = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  computeLayout();
+  draw();
+}
+
+/* Read a color token from the CSS above, so light/dark mode both work */
+function color(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+/* =========================================================
+   DRAWING
+   ========================================================= */
+function draw() {
+  const groundPx = py(GROUND_Y);
+
+  // Sky
+  const sky = ctx.createLinearGradient(0, 0, 0, groundPx);
+  sky.addColorStop(0, color("--sky-top"));
+  sky.addColorStop(1, color("--sky-bottom"));
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, groundPx);
+
+  // Soil, with a strip of grass on top
+  ctx.fillStyle = color("--soil");
+  ctx.fillRect(0, groundPx, W, H - groundPx);
+  ctx.fillStyle = color("--grass");
+  ctx.fillRect(0, groundPx, W, Math.max(3, 0.04 * scale));
+
+  const m = muzzle();
+  drawRuler(groundPx, m.x);
+  drawHeightGuide(m);
+  if (lastLanding !== null) drawMarker(lastLanding);
+  drawMount();
+  drawTube();
+  drawBall();
+}
+
+/* Meter scale whose 0 mark sits directly below the muzzle.
+   It slides left or right whenever the angle changes. */
+function drawRuler(groundPx, zeroX) {
+  ctx.strokeStyle = color("--ruler");
+  ctx.fillStyle   = color("--ruler");
+  ctx.lineWidth   = 1.5;
+  const fontSize  = Math.max(11, Math.min(15, scale * 0.11));
+  ctx.font = `${fontSize}px system-ui, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+
+  for (let d = 0; d <= 6; d += 0.5) {
+    const isWhole = Number.isInteger(d);
+    const len = isWhole ? 10 : 5;
+    const x = px(zeroX + d);
+    ctx.beginPath();
+    ctx.moveTo(x, groundPx);
+    ctx.lineTo(x, groundPx + len);
+    ctx.stroke();
+    if (isWhole) ctx.fillText(`${d} m`, x, groundPx + len + 3);
+  }
+}
+
+/* Dashed line from the muzzle straight down to the ground,
+   showing where the scale's 0 mark comes from. */
+function drawHeightGuide(m) {
+  ctx.save();
+  ctx.strokeStyle = color("--guide");
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([5, 4]);
+  ctx.beginPath();
+  ctx.moveTo(px(m.x), py(m.y));
+  ctx.lineTo(px(m.x), py(GROUND_Y));
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawMarker(xMeters) {
+  const x = px(xMeters);
+  const base = py(GROUND_Y);
+  const top  = py(GROUND_Y + 0.38);
+  ctx.strokeStyle = color("--marker");
+  ctx.fillStyle   = color("--marker");
+  ctx.lineWidth = 2;
+  ctx.beginPath();            // flagpole
+  ctx.moveTo(x, base);
+  ctx.lineTo(x, top);
+  ctx.stroke();
+  ctx.beginPath();            // flag
+  ctx.moveTo(x, top);
+  ctx.lineTo(x + 0.20 * scale, top + 0.07 * scale);
+  ctx.lineTo(x, top + 0.14 * scale);
+  ctx.closePath();
+  ctx.fill();
+}
+
+/* Small hinge bracket on the ground holding the pivot pin */
+function drawMount() {
+  ctx.fillStyle = color("--mount");
+  ctx.beginPath();
+  ctx.moveTo(px(-0.11), py(GROUND_Y));
+  ctx.lineTo(px(0.11),  py(GROUND_Y));
+  ctx.lineTo(px(0.03),  py(0));
+  ctx.lineTo(px(-0.03), py(0));
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawTube() {
+  const theta = angleDeg * Math.PI / 180;
+  const len = TUBE_LENGTH * scale;
+  const wid = TUBE_WIDTH * scale;
+
+  ctx.save();
+  ctx.translate(px(0), py(0));     // move the origin to the pivot
+  ctx.rotate(-theta);              // negative because screen y points down
+  ctx.fillStyle   = color("--tube");
+  ctx.strokeStyle = color("--tube-edge");
+  ctx.lineWidth = 1.5;
+  ctx.fillRect(0, -wid / 2, len, wid);          // tube body extends forward
+  ctx.strokeRect(0, -wid / 2, len, wid);
+  ctx.fillRect(len - 0.05 * scale, -wid / 2 - 0.02 * scale,
+               0.05 * scale, wid + 0.04 * scale);   // muzzle lip
+  ctx.restore();
+
+  // Pivot pin
+  ctx.beginPath();
+  ctx.arc(px(0), py(0), 0.03 * scale, 0, 2 * Math.PI);
+  ctx.fillStyle = color("--tube-edge");
+  ctx.fill();
+}
+
+function drawBall() {
+  ctx.beginPath();
+  ctx.arc(px(ball.x), py(ball.y), BALL_R * scale, 0, 2 * Math.PI);
+  ctx.fillStyle = color("--ball");
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = color("--ball-edge");
+  ctx.stroke();
+}
+
+/* =========================================================
+   READOUT TEXT
+   ========================================================= */
+function heightText() {
+  return `${muzzle().y.toFixed(2)} m`;
+}
+
+function showReadyText() {
+  readout.innerHTML =
+    `Launch speed <strong>7.0 m/s</strong>, launch height ` +
+    `<strong>${heightText()}</strong>. Press Launch.`;
+}
+
+/* =========================================================
+   LAUNCHING AND ANIMATION
+   ========================================================= */
+function launch() {
+  if (flying) return;
+  const theta = angleDeg * Math.PI / 180;
+  vx = V0 * Math.cos(theta);
+  vy = V0 * Math.sin(theta);
+  start = muzzle();
+  // Time to fall from height start.y back to y = 0 (positive root of
+  // start.y + vy*t - (1/2) g t^2 = 0)
+  flightTime = (vy + Math.sqrt(vy * vy + 2 * G * start.y)) / G;
+  ball = { x: start.x, y: start.y };
+  lastLanding = null;
+  flying = true;
+  setControlsEnabled(false);
+  readout.textContent = `In flight at ${angleDeg}°…`;
+  launchTime = performance.now();
+  requestAnimationFrame(step);
+}
+
+function step(now) {
+  let t = (now - launchTime) / 1000;           // elapsed seconds
+  if (t >= flightTime) t = flightTime;
+
+  // Exact kinematics (no air resistance), starting from the muzzle
+  ball.x = start.x + vx * t;
+  ball.y = start.y + vy * t - 0.5 * G * t * t;
+
+  if (t >= flightTime) {
+    land();
+  } else {
+    draw();
+    requestAnimationFrame(step);
+  }
+}
+
+function land() {
+  flying = false;
+  ball.y = 0;
+  lastLanding = ball.x;
+  const range = Math.max(0, ball.x - start.x);  // measured from the muzzle
+  readout.innerHTML =
+    `At <strong>${angleDeg}°</strong> from a launch height of ` +
+    `<strong>${start.y.toFixed(2)} m</strong>, the ball landed ` +
+    `<strong>${range.toFixed(2)} m</strong> from the muzzle.`;
+  setControlsEnabled(true);
+  draw();
+}
+
+function setControlsEnabled(on) {
+  slider.disabled = !on;
+  launchBtn.disabled = !on;
+}
+
+/* =========================================================
+   USER INPUT
+   ========================================================= */
+slider.addEventListener("input", () => {
+  angleDeg = Number(slider.value);
+  angleOut.textContent = `${angleDeg}°`;
+  ball = muzzle();              // put the ball back at the muzzle
+  lastLanding = null;           // old flag no longer matches the moved scale
+  showReadyText();
+  draw();
+});
+
+launchBtn.addEventListener("click", launch);
+
+ball = muzzle();
+showReadyText();
+new ResizeObserver(resize).observe(stage);
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
+resize();
+</script>
+</body>
+</html>
