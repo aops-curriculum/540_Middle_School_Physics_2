@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=500, initial-scale=1">
+<title>Monkey and Hunter</title>
+<style>
+  /* ---------- Colors for the control bar (light and dark mode) ---------- */
+  :root {
+    --bar-bg: #eef3ee;
+    --bar-text: #1f2a1f;
+    --btn-bg: #2f6b3a;
+    --btn-text: #ffffff;
+    --btn-off: #9aa79a;
+    --focus: #e8833a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bar-bg: #1c241c;
+      --bar-text: #e3ece3;
+      --btn-bg: #4d9a5a;
+      --btn-text: #ffffff;
+      --btn-off: #4a554a;
+      --focus: #f0a066;
+    }
+  }
+
+  /* ---------- Page layout: 500 x 400 total ---------- */
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 500px;
+    height: 400px;
+    overflow: hidden;
+    background: var(--bar-bg);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  canvas { display: block; }          /* the 500 x 340 scene */
+
+  #controls {                          /* the 500 x 60 control bar */
+    height: 60px;
+    box-sizing: border-box;
+    padding: 0 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: var(--bar-text);
+    background: var(--bar-bg);
+    font-size: 15px;
+  }
+  #controls label { white-space: nowrap; }
+  #angle { flex: 1; accent-color: var(--btn-bg); }
+  #angleReadout {
+    width: 3.2em;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+  }
+  button {
+    font: inherit;
+    font-weight: 600;
+    padding: 7px 16px;
+    border: none;
+    border-radius: 6px;
+    background: var(--btn-bg);
+    color: var(--btn-text);
+    cursor: pointer;
+  }
+  button:disabled { background: var(--btn-off); cursor: default; }
+  button:focus-visible, input:focus-visible {
+    outline: 3px solid var(--focus);
+    outline-offset: 2px;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="scene"></canvas>
+
+<div id="controls">
+  <label for="angle">Launch angle</label>
+  <input id="angle" type="range" min="5" max="75" step="1" value="45">
+  <span id="angleReadout">45°</span>
+  <button id="goBtn">Go</button>
+  <button id="resetBtn">Reset</button>
+</div>
+
+<script>
+// =====================================================================
+//  SETTINGS  (all distances in pixels, times in seconds)
+// =====================================================================
+const W = 500, H = 340;          // size of the drawing area
+const GROUND_Y = 320;            // y-coordinate of the ground surface
+const LAUNCH = { x: 45, y: 300 };// where the dart's tip starts
+const MONKEY_X = 430;            // horizontal position of the monkey
+const AIM_DEG = 32;              // the angle that points straight at the monkey
+const G = 300;                   // gravity, in pixels per second squared
+const V0 = 500;                  // launch speed, in pixels per second (hidden)
+const HIT_TOLERANCE = 4;         // how close (px) the tip must pass to the monkey's center
+const TIME_SCALE = 0.6;          // <1 plays the motion in slow motion
+const MONKEY_FEET = 18;          // distance from monkey's body center to its feet
+
+// The monkey's starting height is chosen so that the line from the dart
+// to the monkey's body center makes exactly AIM_DEG with the horizontal.
+const MONKEY_Y0 = LAUNCH.y - (MONKEY_X - LAUNCH.x) * Math.tan(AIM_DEG * Math.PI / 180);
+const BRANCH_Y = MONKEY_Y0 - 32; // the branch sits right at the monkey's hands
+
+// =====================================================================
+//  CANVAS SETUP (sharp drawing on high-resolution screens)
+// =====================================================================
+const canvas = document.getElementById('scene');
+const ctx = canvas.getContext('2d');
+const dpr = window.devicePixelRatio || 1;
+canvas.width = W * dpr;
+canvas.height = H * dpr;
+canvas.style.width = W + 'px';
+canvas.style.height = H + 'px';
+ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+const slider = document.getElementById('angle');
+const readout = document.getElementById('angleReadout');
+const goBtn = document.getElementById('goBtn');
+const resetBtn = document.getElementById('resetBtn');
+
+// =====================================================================
+//  STATE  (what the simulation is doing right now)
+// =====================================================================
+let phase = 'ready';   // 'ready' (aiming), 'flying', or 'done'
+let shot = null;       // the pre-computed plan for the current shot
+let t = 0;             // simulation time since launch
+let startTime = 0;     // clock reading when Go was pressed
+
+const toRad = deg => deg * Math.PI / 180;
+
+// =====================================================================
+//  PHYSICS
+// =====================================================================
+
+// Work out everything about a shot the moment it is fired.
+function planShot(angleDeg) {
+  const th = toRad(angleDeg);
+  const vx = V0 * Math.cos(th);   // horizontal speed
+  const vy = V0 * Math.sin(th);   // upward speed at launch
+
+  // When does the monkey's feet reach the ground?  Solve ½ G t² = drop.
+  const drop = (GROUND_Y - MONKEY_FEET) - MONKEY_Y0;
+  const tMonkeyLand = Math.sqrt(2 * drop / G);
+
+  // When does the dart's tip reach the ground?
+  // Solve LAUNCH.y − vy·t + ½G·t² = GROUND_Y with the quadratic formula.
+  const a = 0.5 * G, b = -vy, c = LAUNCH.y - GROUND_Y;
+  const tDartGround = (-b + Math.sqrt(b * b - 4 * a * c)) / (2 * a);
+
+  // When does the dart leave the right edge of the picture?
+  const tDartExit = (W + 40 - LAUNCH.x) / vx;
+  const tDartEnd = Math.min(tDartGround, tDartExit);
+
+  // Hit test.  Both objects fall with the same acceleration, so relative
+  // to the monkey the dart moves in a straight line at constant velocity
+  // (vx, −vy).  Find the moment of closest approach on that line.
+  const rx = LAUNCH.x - MONKEY_X;     // dart's position relative to monkey
+  const ry = LAUNCH.y - MONKEY_Y0;
+  const ux = vx, uy = -vy;            // relative velocity (screen y points down)
+  const tClose = -(rx * ux + ry * uy) / (ux * ux + uy * uy);
+  const closest = Math.hypot(rx + ux * tClose, ry + uy * tClose);
+
+  const hit = tClose > 0 &&
+              closest <= HIT_TOLERANCE &&
+              tClose < tMonkeyLand &&
+              tClose < tDartGround;
+
+  const tEnd = hit ? tClose : Math.max(tDartEnd, tMonkeyLand);
+
+  return { angleDeg, vx, vy, hit, tHit: tClose, tDartEnd, tMonkeyLand, tEnd };
+}
+
+// Dart position and pointing direction at time `time`.
+function dartState(time) {
+  const x = LAUNCH.x + shot.vx * time;
+  const y = LAUNCH.y - shot.vy * time + 0.5 * G * time * time;
+  const phi = Math.atan2(-shot.vy + G * time, shot.vx); // dart points along its velocity
+  return { x, y, phi };
+}
+
+// Monkey's body-center height at time `time` (stops at the ground).
+function monkeyY(time) {
+  if (!shot) return MONKEY_Y0;
+  return Math.min(MONKEY_Y0 + 0.5 * G * time * time, GROUND_Y - MONKEY_FEET);
+}
+
+// =====================================================================
+//  DRAWING
+// =====================================================================
+
+function drawBackground() {
+  const sky = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
+  sky.addColorStop(0, '#b9def2');
+  sky.addColorStop(1, '#e6f4fb');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, GROUND_Y);
+
+  ctx.fillStyle = '#6fa64a';                 // grass
+  ctx.fillRect(0, GROUND_Y, W, 6);
+  ctx.fillStyle = '#8a6a45';                 // soil
+  ctx.fillRect(0, GROUND_Y + 6, W, H - GROUND_Y - 6);
+}
+
+function drawTree() {
+  // trunk
+  ctx.fillStyle = '#6b4a2f';
+  ctx.fillRect(466, 0, 24, GROUND_Y);
+  // branch, tapering toward its tip
+  ctx.beginPath();
+  ctx.moveTo(468, BRANCH_Y - 5);
+  ctx.lineTo(392, BRANCH_Y - 3);
+  ctx.quadraticCurveTo(384, BRANCH_Y, 392, BRANCH_Y + 3);
+  ctx.lineTo(468, BRANCH_Y + 6);
+  ctx.closePath();
+  ctx.fill();
+  // leaves (kept above the branch so they never hide the monkey)
+  ctx.fillStyle = '#3f7d3a';
+  const leaves = [[478, -6, 30], [445, -12, 22], [500, 14, 22], [418, -14, 18]];
+  for (const [x, y, r] of leaves) {
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, 2 * Math.PI);
+    ctx.fill();
+  }
+}
+
+// Dotted straight line from the launcher along the aim direction.
+function drawAimLine(angleDeg) {
+  const th = toRad(angleDeg);
+  const len = 700;                       // long enough to reach any edge
+  ctx.save();
+  ctx.strokeStyle = 'rgba(40, 40, 40, 0.55)';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([4, 5]);               // 4 px dash, 5 px gap
+  ctx.beginPath();
+  ctx.moveTo(LAUNCH.x, LAUNCH.y);
+  ctx.lineTo(LAUNCH.x + len * Math.cos(th), LAUNCH.y - len * Math.sin(th));
+  ctx.stroke();
+  ctx.restore();                         // turns the dashes back off
+}
+
+function drawLauncher(angleDeg) {
+  // small tripod
+  ctx.strokeStyle = '#4a4a4a';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(LAUNCH.x, LAUNCH.y); ctx.lineTo(LAUNCH.x - 9, GROUND_Y);
+  ctx.moveTo(LAUNCH.x, LAUNCH.y); ctx.lineTo(LAUNCH.x + 9, GROUND_Y);
+  ctx.moveTo(LAUNCH.x, LAUNCH.y); ctx.lineTo(LAUNCH.x, GROUND_Y);
+  ctx.stroke();
+
+  // barrel, rotated to the chosen angle around the launch point
+  ctx.save();
+  ctx.translate(LAUNCH.x, LAUNCH.y);
+  ctx.rotate(-toRad(angleDeg));        // negative because screen y points down
+  ctx.fillStyle = '#3c4a3c';
+  ctx.fillRect(-38, -4.5, 28, 9);
+  ctx.fillStyle = '#5b6b5b';
+  ctx.fillRect(-38, -4.5, 28, 3);      // highlight stripe
+  ctx.restore();
+
+  // pivot
+  ctx.fillStyle = '#2b2b2b';
+  ctx.beginPath();
+  ctx.arc(LAUNCH.x, LAUNCH.y, 3, 0, 2 * Math.PI);
+  ctx.fill();
+}
+
+// Draws the dart with its tip at (x, y), pointing in direction phi.
+function drawDart(x, y, phi) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(phi);
+  // needle
+  ctx.strokeStyle = '#6b7280';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-7, 0); ctx.stroke();
+  // barrel
+  ctx.fillStyle = '#f1f1ee';
+  ctx.strokeStyle = '#3d3d3d';
+  ctx.lineWidth = 1;
+  ctx.fillRect(-19, -2.5, 12, 5);
+  ctx.strokeRect(-19, -2.5, 12, 5);
+  // tranquilizer liquid
+  ctx.fillStyle = '#e8833a';
+  ctx.fillRect(-16, -1.5, 6, 3);
+  // tail tuft
+  ctx.fillStyle = '#c0392b';
+  ctx.beginPath();
+  ctx.moveTo(-19, 0);
+  ctx.lineTo(-28, -5);
+  ctx.lineTo(-25, 0);
+  ctx.lineTo(-28, 5);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+// Draws the monkey with its body center at (mx, my).
+function drawMonkey(mx, my, asleep) {
+  const fur = '#8a5a33', face = '#e8c39e';
+  ctx.lineCap = 'round';
+
+  // tail
+  ctx.strokeStyle = fur;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(mx + 4, my + 6);
+  ctx.bezierCurveTo(mx + 20, my + 12, mx + 22, my - 6, mx + 14, my - 4);
+  ctx.stroke();
+
+  // legs
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(mx - 3, my + 6); ctx.lineTo(mx - 6, my + 12); ctx.lineTo(mx - 4, my + MONKEY_FEET);
+  ctx.moveTo(mx + 3, my + 6); ctx.lineTo(mx + 6, my + 12); ctx.lineTo(mx + 4, my + MONKEY_FEET);
+  ctx.stroke();
+
+  // arms reaching above the head
+  ctx.beginPath();
+  ctx.moveTo(mx - 4, my - 5); ctx.lineTo(mx - 5, my - 30);
+  ctx.moveTo(mx + 4, my - 5); ctx.lineTo(mx + 5, my - 30);
+  ctx.stroke();
+  ctx.fillStyle = face;                       // hands
+  ctx.beginPath(); ctx.arc(mx - 5, my - 31, 2.5, 0, 2 * Math.PI); ctx.fill();
+  ctx.beginPath(); ctx.arc(mx + 5, my - 31, 2.5, 0, 2 * Math.PI); ctx.fill();
+
+  // small hips just below the head (the torso is mostly gone)
+  ctx.fillStyle = fur;
+  ctx.beginPath(); ctx.ellipse(mx, my + 5, 5.5, 4.5, 0, 0, 2 * Math.PI); ctx.fill();
+  ctx.fillStyle = face;
+  ctx.beginPath(); ctx.ellipse(mx, my + 5.5, 3.5, 3, 0, 0, 2 * Math.PI); ctx.fill();
+
+  // head position: hy is the height of the head's center
+  const hy = my - 5;
+
+  // ears
+  ctx.fillStyle = fur;
+  ctx.beginPath(); ctx.arc(mx - 7, hy, 3, 0, 2 * Math.PI); ctx.fill();
+  ctx.beginPath(); ctx.arc(mx + 7, hy, 3, 0, 2 * Math.PI); ctx.fill();
+
+  // head and face
+  ctx.beginPath(); ctx.arc(mx, hy, 7, 0, 2 * Math.PI); ctx.fill();
+  ctx.fillStyle = face;
+  ctx.beginPath(); ctx.ellipse(mx, hy + 1.5, 5, 4.5, 0, 0, 2 * Math.PI); ctx.fill();
+
+  // eyes: open dots, or closed lines once tranquilized
+  ctx.fillStyle = '#2b1d12';
+  ctx.strokeStyle = '#2b1d12';
+  ctx.lineWidth = 1.2;
+  if (asleep) {
+    ctx.beginPath();
+    ctx.moveTo(mx - 3.2, hy); ctx.lineTo(mx - 0.8, hy);
+    ctx.moveTo(mx + 0.8, hy); ctx.lineTo(mx + 3.2, hy);
+    ctx.stroke();
+    ctx.font = 'bold 11px system-ui, sans-serif';
+    ctx.fillText('z', mx - 22, my - 24);
+    ctx.font = 'bold 14px system-ui, sans-serif';
+    ctx.fillText('z', mx - 32, my - 34);
+  } else {
+    ctx.beginPath(); ctx.arc(mx - 2, hy, 1, 0, 2 * Math.PI); ctx.fill();
+    ctx.beginPath(); ctx.arc(mx + 2, hy, 1, 0, 2 * Math.PI); ctx.fill();
+  }
+}
+
+// Dotted path showing where the dart has been so far.
+function drawTrail() {
+  const tStop = Math.min(t, shot.tDartEnd);
+  ctx.fillStyle = 'rgba(60, 60, 60, 0.45)';
+  for (let s = 0; s <= tStop; s += 0.02) {
+    const p = dartState(s);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 1.3, 0, 2 * Math.PI);
+    ctx.fill();
+  }
+}
+
+function drawMessage() {
+  let text, color;
+  if (phase === 'ready') {
+    text = 'Set the launch angle, then press Go.';
+    color = '#1f2a1f';
+  } else if (phase === 'done' && shot.hit) {
+    text = 'Hit! The monkey is tranquilized.';
+    color = '#1f6b2e';
+  } else if (phase === 'done') {
+    text = 'Missed. Press Reset and try another angle.';
+    color = '#a3291f';
+  } else {
+    return;
+  }
+  ctx.font = '600 14px system-ui, sans-serif';
+  const w = ctx.measureText(text).width + 20;
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+  ctx.fillRect(10, 10, w, 28);
+  ctx.fillStyle = color;
+  ctx.fillText(text, 20, 29);
+}
+
+// Redraw the whole scene from the current state.
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  drawBackground();
+
+  const angleDeg = shot ? shot.angleDeg : Number(slider.value);
+  drawAimLine(angleDeg);   // drawn early so the tree and monkey sit in front of it
+  drawTree();
+
+  if (shot) drawTrail();
+
+  // where the dart is
+  let dart;
+  if (!shot) {
+    dart = { x: LAUNCH.x, y: LAUNCH.y, phi: -toRad(angleDeg) };
+  } else {
+    dart = dartState(Math.min(t, shot.tDartEnd));
+  }
+  const hitShown = shot && shot.hit && phase === 'done';
+
+  // Drawing order decides what appears in front.  A missed dart is drawn
+  // first so it passes behind the monkey; a successful dart is drawn last
+  // so it is visibly stuck in the monkey.
+  if (!hitShown) drawDart(dart.x, dart.y, dart.phi);
+  drawLauncher(angleDeg);
+  drawMonkey(MONKEY_X, monkeyY(t), hitShown);
+  if (hitShown) drawDart(dart.x, dart.y, dart.phi);
+
+  drawMessage();
+}
+
+// =====================================================================
+//  ANIMATION AND CONTROLS
+// =====================================================================
+
+function frame(now) {
+  t = Math.min((now - startTime) / 1000 * TIME_SCALE, shot.tEnd);
+  if (t >= shot.tEnd) phase = 'done';
+  draw();
+  if (phase === 'flying') requestAnimationFrame(frame);
+}
+
+function fire() {
+  if (phase !== 'ready') return;
+  shot = planShot(Number(slider.value));
+  phase = 'flying';
+  slider.disabled = true;
+  goBtn.disabled = true;
+  startTime = performance.now();
+  requestAnimationFrame(frame);
+}
+
+function reset() {
+  phase = 'ready';
+  shot = null;
+  t = 0;
+  slider.disabled = false;
+  goBtn.disabled = false;
+  draw();
+}
+
+slider.addEventListener('input', () => {
+  readout.textContent = slider.value + '°';
+  if (phase === 'ready') draw();
+});
+goBtn.addEventListener('click', fire);
+resetBtn.addEventListener('click', reset);
+
+draw();
+</script>
+</body>
+</html>
