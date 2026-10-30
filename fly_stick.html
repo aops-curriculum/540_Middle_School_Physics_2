@@ -145,6 +145,9 @@ const G    = 700 * CFG.gravity;
 const KREP = 8.5e6 * CFG.strength;   // like charges push apart
 const KATT = 6.0e6 * CFG.strength;   // charged stick pulls a neutral flyer
 const KPAP = 4.8e6 * CFG.strength;   // charged stick pulls paper
+/* one cutoff for "charged": above it a flyer glows, puffs open, grabs
+   paper, pushes and pulls, and shares its charge on contact */
+const QON  = 0.05;
 
 /* ─── state ────────────────────────────────────────────────────── */
 let stick, flyers, papers, hand, glove, sparks, flows, hover, drag, prev;
@@ -298,15 +301,15 @@ function step(dt) {
     const d = Math.hypot(dx, dy), th = Math.random() * 6.283;
     const ux = d > 0.5 ? dx / d : Math.cos(th), uy = d > 0.5 ? dy / d : Math.sin(th);
     const r = Math.max(34, d);
-    if (r < 44 && Math.max(a.q, b.q) > 0.3 && Math.abs(a.q - b.q) > 0.1) {
+    if (r < 44 && Math.max(a.q, b.q) > QON && Math.abs(a.q - b.q) > 0.1) {
       const hi = a.q > b.q ? a : b, lo = hi === a ? b : a;
       addFlow(hi.x, hi.y, lo.x, lo.y, 3);
       addSpark((a.x + b.x) / 2, (a.y + b.y) / 2, 2);
       a.q = b.q = (a.q + b.q) / 2;
     }
     let push = 0;
-    if (a.q > 0.02 && b.q > 0.02) push = Math.min(4000, KREP * a.q * b.q / (r * r));
-    else if ((a.q > 0.02 || b.q > 0.02) && r < 175)
+    if (a.q > QON && b.q > QON) push = Math.min(4000, KREP * a.q * b.q / (r * r));
+    else if ((a.q > QON || b.q > QON) && r < 175)
       push = -Math.min(2000, KATT * 0.5 * Math.max(a.q, b.q) / (r * r));
     fa[i].x -= push * ux; fa[i].y -= push * uy;
     fa[j].x += push * ux; fa[j].y += push * uy;
@@ -316,7 +319,7 @@ function step(dt) {
   for (const f of flyers) {
     /* charged: the loop springs open. uncharged: it sags flat again. */
     if (CFG.collapse) {
-      const tgt = f.q > 0.3 ? 1 : 0;
+      const tgt = f.q > QON ? 1 : 0;
       const rate = tgt > f.open ? 12 : 4.5;
       f.open += (tgt - f.open) * Math.min(1, rate * dt);
       if (Math.abs(tgt - f.open) < 0.004) f.open = tgt;
@@ -327,7 +330,7 @@ function step(dt) {
     let r = Math.hypot(dx, dy) || 1;
 
     /* the bare spoon drains a charged flyer */
-    const sc = f.q > 0.02 ? spoonContact(f.x, f.y, f.r * 0.8 + 10) : null;
+    const sc = f.q > QON ? spoonContact(f.x, f.y, f.r * 0.8 + 10) : null;
     if (sc) {
       f.q = 0; addSpark(sc.x, sc.y, 3);
       addFlow(f.x, f.y, hand.x + 58, hand.y, 4);
@@ -344,24 +347,25 @@ function step(dt) {
       if (vn < 0) { f.vx -= 1.5 * vn * nx; f.vy -= 1.5 * vn * ny; }
     }
 
-    /* touching the charged tip loads the flyer up with the same charge */
+    /* touching the charged tip loads the flyer right up with the same
+       charge: any touch, however brief, charges it fully */
     if (sq > 0 && r < 34 && f.q < 1) {
-      f.q = Math.min(1, f.q + dt / 0.35);
+      f.q = 1;
+      addSpark(stick.x, stick.y, 2);
+      addFlow(stick.x, stick.y, f.x, f.y, 3);
       if (!f.held) {
         f.x += (stick.x - f.x) * 0.35;
         f.y += (stick.y - 10 - f.y) * 0.35;
-        f.vx = 0; f.vy = f.q >= 1 ? -50 : 0;
+        f.vx = 0; f.vy = -50;
+        continue;
       }
-      if (f.q < 1 && Math.random() < dt * 8) addSpark(stick.x, stick.y, 1);
-      if (f.q < 1 && Math.random() < dt * 16) addFlow(stick.x, stick.y, f.x, f.y, 1);
-      if (!f.held) continue;
     }
     if (f.held) continue;
 
     const fi = flyers.indexOf(f);
     let ax = fa[fi].x, ay = G + fa[fi].y;
     if (sq > 0) {
-      if (f.q > 0.02) {
+      if (f.q > QON) {
         const a = Math.min(6000, KREP * f.q * sq / (r * r));
         ax += a * dx / r * 0.35;          /* mostly lifts, drifts slowly sideways */
         ay += a * dy / r;
@@ -391,12 +395,12 @@ function step(dt) {
     if (p.stuck) {
       const t = p.stuck.t;
       const tq = (t === stick) ? sq : t.stored ? 0 : t.q;
-      if (tq <= 0.05) { p.stuck = null; }
+      if (tq <= QON) { p.stuck = null; }
       else { p.x = t.x + p.stuck.ox; p.y = t.y + p.stuck.oy; p.vx = 0; p.vy = 0; continue; }
     }
     const cands = [];
     if (sq > 0) cands.push({ o: stick, q: sq, k: KPAP });
-    for (const f of flyers) if (f.q > 0.05 && !f.stored) cands.push({ o: f, q: f.q, k: KPAP * 0.5 });
+    for (const f of flyers) if (f.q > QON && !f.stored) cands.push({ o: f, q: f.q, k: KPAP * 0.5 });
 
     let ax = 0, ay = G, best = null, bestA = 0;
     for (const c of cands) {
@@ -499,7 +503,7 @@ function polarAxis(x, y, skip) {
   }
   const sq = stickCharge();
   if (sq > 0) look(stick.x, stick.y, 2.2 * sq);
-  for (const f of flyers) if (f !== skip && f.q > 0.05 && !f.stored) look(f.x, f.y, f.q);
+  for (const f of flyers) if (f !== skip && f.q > QON && !f.stored) look(f.x, f.y, f.q);
   /* The pull falls off fast with distance, so a plain proportional scale
      leaves the split invisible until the stick is almost touching. The
      square root opens it up while the stick is still a little way off. */
@@ -588,20 +592,22 @@ function drawFlyerCharge(f, A, B, op) {
     /* Both kinds are always there. A neutral flyer holds equal amounts, a
        charged one has a surplus of blue, and a charge nearby slides the two
        kinds to opposite ends. */
-    /* a sagged flyer is a narrow sliver, so it gets fewer marks than an
-       open one, or they would land on top of each other */
-    const base = 2 + Math.round(2 * op);
-    const extra = Math.round(f.q * 2);
+    /* the same number of each kind whether the flyer is open or sagged
+       (a sagged one draws them smaller instead), so a neutral flyer always
+       shows equal red and blue and charging it adds only blue */
+    const base = 3;
+    const extra = Math.round(f.q * 4);
     const ax = f.stored && !f.held ? NO_PULL : polarAxis(f.x, f.y, f);
     const c = Math.cos(f.rot), s = Math.sin(f.rot);
     /* the axis is in the room's frame; turn it into the flyer's */
     const lx = ax.x * c + ax.y * s, ly = -ax.x * s + ax.y * c;
-    splitCloud(lx, ly, ax.s, sx, sy, f.seed,       base + extra, true,  4.1);
-    splitCloud(lx, ly, ax.s, sx, sy, f.seed + 91,  base,         false, 4.1);
+    const sz = 4.1 * (0.7 + 0.3 * op);
+    splitCloud(lx, ly, ax.s, sx, sy, f.seed,       base + extra, true,  sz);
+    splitCloud(lx, ly, ax.s, sx, sy, f.seed + 91,  base,         false, sz);
     return;
   }
 
-  if (f.q <= 0.05) return;
+  if (f.q <= QON) return;
   ctx.strokeStyle = '#2b6fd0'; ctx.lineWidth = 2;
   for (const t of [0.5, 2.2, 3.9, 5.5]) {
     const px = A * Math.sin(2 * t) * 1.35, py = B * Math.cos(t) * 1.1;
@@ -831,19 +837,22 @@ function drawPowerButton() {
     ctx.strokeStyle = 'rgba(220,50,30,' + (0.75 * (1 - k)).toFixed(3) + ')';
     ctx.lineWidth = 2.5; ctx.stroke();
   }
-  /* a tag beside it saying what it does; clicking the tag works too */
+  /* until the first press, a tag beside it says what it does; clicking the
+     tag works too */
+  if (!on && !pressedOnce) {
   const tx = bx + 22, ty = by;
   ctx.font = 'bold 14px Arial';
-  const txt = on ? 'click to turn off' : 'click to turn on';
+  const txt = 'click to turn on';
   const tw = ctx.measureText(txt).width;
   ctx.fillStyle = 'rgba(255,255,255,0.92)';
-  ctx.strokeStyle = on ? '#c0392b' : '#8a5a50'; ctx.lineWidth = 1.5;
+  ctx.strokeStyle = '#8a5a50'; ctx.lineWidth = 1.5;
   roundRect(tx, ty - 12, tw + 14, 24, 6); ctx.fill(); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(tx, ty - 5); ctx.lineTo(tx - 8, ty); ctx.lineTo(tx, ty + 5);
   ctx.closePath(); ctx.fillStyle = ctx.strokeStyle; ctx.fill();
   ctx.fillStyle = '#5a1a12'; ctx.textBaseline = 'middle';
   ctx.fillText(txt, tx + 7, ty + 1);
   ctx.textBaseline = 'alphabetic';
+  }
 
   ctx.beginPath(); ctx.arc(bx, by, hot ? 9 : 8.2, 0, 7);
   ctx.fillStyle = '#12506f'; ctx.fill();
@@ -864,7 +873,7 @@ function drawFlyer(f) {
   const B = R * 0.98;
   const WMAX = R * 0.28 * (1 + 0.45 * (1 - op));
 
-  if (f.q > 0.05) {
+  if (f.q > QON) {
     const g = ctx.createRadialGradient(0, 0, R * 0.3, 0, 0, R * 1.5);
     g.addColorStop(0, 'rgba(90,160,255,0.22)');
     g.addColorStop(1, 'rgba(90,160,255,0)');
@@ -1181,7 +1190,8 @@ function hitTest(x, y) {
     return { type: 'reset' };
   const b = btnPos();
   if (Math.hypot(x - b.x, y - b.y) < 15 ||
-      (x > b.x + 12 && x < b.x + 160 && Math.abs(y - b.y) < 14))
+      (!stick.on && !pressedOnce &&
+       x > b.x + 12 && x < b.x + 160 && Math.abs(y - b.y) < 14))
     return { type: 'power' };
   if (CFG.glove) {
     if (glove.worn) {

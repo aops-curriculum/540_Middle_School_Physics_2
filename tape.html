@@ -84,8 +84,12 @@ const STRIP_R = 36;              /* how close anything gets to its middle */
 /* Two charged strips push or pull on each other by 1/r^2. A strip pulls
    a neutral flyer in by 1/r^3, which is weaker and dies off faster. */
 const KQQ  = 9.0e6 * CFG.strength;
-const KIND = 2.6e8 * CFG.strength;
+const KIND = 1.7e9 * CFG.strength;
 const A_MAX = 2400;
+/* Flyers fall; strips don't, since someone is holding each one up by its
+   handle. A charged strip can still lift a flyer off the floor from a
+   little way above it. */
+const G = 380;
 
 /* ─── the storage tub ─────────────────────────────────────────── */
 /* Drop a strip or a flyer in the tub to set it aside. While it's in
@@ -128,9 +132,9 @@ function strip(letter, x, y, q) {
 }
 
 function addFlyer(i) {
-  /* stacked high enough that the third one clears the storage tub */
-  bodies.push({ kind: 'flyer', x: 760, y: 130 + i * 95, vx: 0, vy: 0,
-                q: 0, r: 30, hx: 22, hy: 31, rot: i * 0.6 - 0.3,
+  /* resting on the floor, between the roll and the storage tub */
+  bodies.push({ kind: 'flyer', x: 400 + i * 70, y: FLOOR - 31 - 4, vx: 0, vy: 0,
+                q: 0, r: 30, hx: 22, hy: 31, rot: i * 0.15 - 0.15,
                 held: false, stored: false, storedAt: 0, seed: 101 + i * 29 });
 }
 
@@ -182,7 +186,7 @@ function step(dt) {
   const live = inPlay();
   for (const a of live) {
     if (a.held) { a.vx = 0; a.vy = 0; continue; }
-    let ax = 0, ay = 0;
+    let ax = 0, ay = a.kind === 'flyer' ? G : 0;
     for (const b of live) {
       if (b === a) continue;
       const dx = b.x - a.x, dy = b.y - a.y;
