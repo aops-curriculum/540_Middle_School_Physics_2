@@ -28,7 +28,11 @@
 /* ?stick=1 puts a Fun Fly Stick on the bench. It is the one charge here
    whose sign we already know, so with it you can pin down which plastic
    is which; without it, rubbing alone only tells you which pairs are
-   opposite. The plastics behave the same either way. */
+   opposite. The plastics behave the same either way.
+
+   Version 2: only two plastics come out of the storage tub at a time
+   (taking out a third sends the one out longest back), the tub wipes off
+   any charge, and a list in the top left keeps what you have seen. */
 const TITLES = {
   0: 'Rubbing Plastics Together',
   1: 'Rubbing Plastics, with a Fun Fly Stick'
@@ -49,6 +53,7 @@ const CFG = {
   signs:    bool('signs', false),
   sparks:   bool('sparks', true),
   resetbtn: bool('resetbtn', true),
+  record:   bool('record', true),
   rublen:   Math.max(20, num('rublen', 210)),
   strength: Math.max(0.05, num('strength', 1))
 };
@@ -102,7 +107,10 @@ const KINDS = [
 
 /* ─── the storage tub ─────────────────────────────────────────── */
 /* Drop a plastic in the tub to set it aside. While it's in there it
-   doesn't push, pull, or rub on anything; drag it back out to use it. */
+   doesn't push, pull, or rub on anything, and whatever charge it had is
+   wiped off; drag it back out to use it. Only two plastics are out at a
+   time. */
+const MAX_OUT = 2;
 const TUB_X = 20, TUB_W = 336, TUB_H = 108, TUB_Y = FLOOR - TUB_H;
 const TUB_SLOT_Y = FLOOR - 14 - SLAB_H / 2;
 function tubSlotX(i) { return TUB_X + 16 + SLAB_W / 2 + i * (SLAB_W + 12); }
@@ -124,14 +132,17 @@ const STICK_Q = 1.6;
 
 /* ─── state ────────────────────────────────────────────────────── */
 let slabs, stick, sparks, rub, hover, drag, prev;
+let record, near, notice;
 
 function reset() {
-  slabs = KINDS.map(k => ({
+  /* everything starts in the tub; take two out to use them */
+  slabs = KINDS.map((k, i) => ({
     kind: 'slab', id: k.id, color: k.color,
-    x: k.x, y: k.y, vx: 0, vy: 0, q: 0, r: SLAB_R,
+    x: tubSlotX(i), y: TUB_SLOT_Y, vx: 0, vy: 0, q: 0, r: SLAB_R,
     hx: SLAB_W / 2 + 4, hy: SLAB_H / 2 + 4, held: false,
-    stored: false, storedAt: 0
+    stored: true, storedAt: i, outAt: 0
   }));
+  record = []; near = {}; notice = null;
   /* The stick starts switched on, and it starts far enough from the
      plastics that a neutral one doesn't creep over to it on its own. */
   stick = { x: 810, y: 140, on: CFG.power };
@@ -195,6 +206,7 @@ function doRub(a, b) {
   const lower = SERIES[a.id] < SERIES[b.id] ? a : b;
   const upper = lower === a ? b : a;
   lower.q = -1; upper.q = 1;
+  note('rubbed ' + lower.id + ' with ' + upper.id);
   const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
   addSpark(mx, my, 4);
   /* push them apart a little so you can see them react right away */
@@ -202,6 +214,54 @@ function doRub(a, b) {
   const d = Math.hypot(dx, dy) || 1;
   lower.x -= dx / d * 14; lower.y -= dy / d * 14;
   upper.x += dx / d * 14; upper.y += dy / d * 14;
+}
+
+/* ─── what you have seen so far ────────────────────────────────── */
+function note(line) {
+  if (CFG.record && record.indexOf(line) < 0) record.push(line);
+}
+
+/* Put a plastic in the tub. That wipes off its charge. */
+function store(o) {
+  o.stored = true; o.storedAt = performance.now();
+  o.vx = 0; o.vy = 0; o.q = 0;
+  if (rub && (rub.self === o || rub.pair === o)) rub = null;
+}
+
+/* Taking a plastic out of the tub. If two are already out, the one that
+   has been out longest goes back in, and a short message says so. */
+function takeOut(o) {
+  if (!o.stored) return;
+  const out = slabs.filter(s => !s.stored && s !== o);
+  if (out.length >= MAX_OUT) {
+    out.sort((a, b) => a.outAt - b.outAt);
+    const back = out[0];
+    store(back);
+    notice = { text: 'Only two plastics out at a time, so ' + back.id +
+                     ' went back in storage.', life: 3.2 };
+  }
+  o.stored = false; o.outAt = performance.now();
+}
+
+/* Two charged things sitting near each other, with nobody moving them,
+   go in the list once they have had half a second to show what they do. */
+const NEAR_R = 300, NEAR_T = 0.5;
+function watchPairs(dt) {
+  const things = inPlay().filter(s => s.q && !s.held)
+    .map(s => ({ name: s.id, x: s.x, y: s.y, q: s.q, order: SERIES[s.id] }));
+  if (stickCharge() && !(drag && drag.type === 'stick'))
+    things.push({ name: 'the stick', x: stick.x, y: stick.y, q: stickCharge(), order: 9 });
+  const seen = {};
+  for (let i = 0; i < things.length; i++) for (let j = i + 1; j < things.length; j++) {
+    let a = things[i], b = things[j];
+    if (Math.hypot(a.x - b.x, a.y - b.y) > NEAR_R) continue;
+    if (a.order > b.order) { const t = a; a = b; b = t; }
+    const verdict = a.q * b.q > 0 ? 'push apart' : 'pull together';
+    const key = a.name + ' and ' + b.name + ' ' + verdict;
+    seen[key] = (near[key] || 0) + dt;
+    if (seen[key] >= NEAR_T) note(key);
+  }
+  near = seen;
 }
 
 /* ─── physics ──────────────────────────────────────────────────── */
@@ -283,6 +343,9 @@ function step(dt) {
     sparks[i].life -= dt;
     if (sparks[i].life <= 0) sparks.splice(i, 1);
   }
+
+  watchPairs(dt);
+  if (notice && (notice.life -= dt) <= 0) notice = null;
 }
 
 /* ─── drawing ──────────────────────────────────────────────────── */
@@ -550,7 +613,7 @@ function drawTubBack() {
   ctx.font = 'bold 15px Arial';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillStyle = hot ? '#4f6c88' : '#7d8992';
-  ctx.fillText('storage', TUB_X + TUB_W / 2, TUB_Y + 20);
+  ctx.fillText('storage (wipes off charge)', TUB_X + TUB_W / 2, TUB_Y + 20);
   ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
   ctx.restore();
 }
@@ -573,9 +636,37 @@ function label(text, x, y) {
   ctx.textAlign = 'left';
 }
 
+function drawRecord() {
+  if (!CFG.record || !record.length) return;
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.font = 'bold 12px Arial';
+  ctx.fillStyle = '#b2b9c0';
+  ctx.fillText('WHAT YOU HAVE SEEN SO FAR', 36, 66);
+  ctx.font = '13px Arial';
+  ctx.fillStyle = '#7d858c';
+  for (let i = 0; i < record.length; i++) ctx.fillText(record[i], 36, 90 + i * 19);
+}
+
+function drawNotice() {
+  if (!notice) return;
+  const a = Math.min(1, notice.life / 0.4);
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.font = 'bold 14px Arial';
+  const tw = ctx.measureText(notice.text).width;
+  const x = W / 2 - tw / 2 - 12, y = 70;
+  ctx.fillStyle = 'rgba(255,248,232,0.96)';
+  ctx.strokeStyle = '#d9a441'; ctx.lineWidth = 1.5;
+  roundRect(x, y, tw + 24, 28, 7); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#6b4a10'; ctx.textBaseline = 'middle';
+  ctx.fillText(notice.text, x + 12, y + 15);
+  ctx.restore();
+}
+
 function draw() {
   ctx.clearRect(0, 0, W, H);
   drawFloor();
+  drawRecord();
   drawTubBack();
   drawStick();
   drawScuff();
@@ -584,10 +675,13 @@ function draw() {
   drawSparks();
 
   if (CFG.labels) {
-    caption('drag one plastic across another to rub them', W / 2, 52, false);
+    caption(slabs.filter(s => !s.stored).length < 2
+              ? 'take two plastics out of storage, then drag one across the other'
+              : 'drag one plastic across another to rub them', W / 2, 52, false);
     if (CFG.stick)
       label('this charge is positive', stick.x, Math.min(H - 6, stick.y + WAND_LEN + 26));
   }
+  drawNotice();
   drawResetIcon();
 }
 
@@ -636,8 +730,9 @@ function down(x, y) {
     drag = { type: 'stick', ox: stick.x - x, oy: stick.y - y };
   } else {
     h.o.held = true;
-    /* picking a plastic up out of the tub puts it back in play */
-    h.o.stored = false;
+    /* picking a plastic up out of the tub puts it back in play, and sends
+       another one back if two are already out */
+    takeOut(h.o);
     drag = { type: 'slab', o: h.o, ox: h.o.x - x, oy: h.o.y - y };
   }
   prev = { x: x, y: y, t: performance.now() };
@@ -687,9 +782,7 @@ function up(byMouse) {
   if (drag && drag.o) {
     const o = drag.o;
     o.held = false;
-    if (overTub(o.x, o.y)) {
-      o.stored = true; o.storedAt = performance.now(); o.vx = 0; o.vy = 0;
-    }
+    if (overTub(o.x, o.y)) store(o);
   }
   drag = null; rub = null;
   canvas.style.cursor = 'default';
@@ -738,6 +831,7 @@ requestAnimationFrame(loop);
     {name:'power',    type:'toggle',                              default:1,   desc:'Stick starts switched on'},
     {name:'signs',    type:'toggle',                              default:0,   desc:'Give away the answer: stamp + or - on a charged plastic'},
     {name:'labels',   type:'toggle',                              default:1,   desc:'Show the captions'},
+    {name:'record',   type:'toggle',                              default:1,   desc:'Keep the list of what you have seen'},
     {name:'sparks',   type:'toggle',                              default:1,   desc:'Show sparks'},
     {name:'resetbtn', type:'toggle',                              default:1,   desc:'Show the start-over arrow'},
     {name:'rublen',   type:'number', min:40,  max:600, step:10,   default:210, desc:'How far you drag before the rubbing takes'},
