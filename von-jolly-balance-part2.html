@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jolly balance: lead sphere</title>
+<!--
+  Jolly balance simulation, part 2: the lead sphere
+  -------------------------------------------------
+  Starts from part 1's solved state (31 mg already on the upper right pan).
+  A huge lead sphere under the lower left pan pulls that mass down a little
+  more, and the student must find the extra 0.6 mg that restores balance.
+  Everything is drawn in ONE <svg> element whose internal coordinate system
+  ("viewBox") is 500 units wide and 400 units tall. The browser stretches that
+  coordinate system to fit whatever size the iframe is, so all the numbers in
+  the code below are in "viewBox units", not screen pixels.
+-->
+<style>
+  /* Colour tokens. The second block swaps them when the viewer uses dark mode. */
+  :root{
+    --bg:#ecedea; --ink:#2b2f2c; --muted:#6c716d;
+    --panel:#f6f6f3; --panel-edge:#c9cbc4; --pocket:#dfe0da;
+    --stand:#33463b; --stand-hi:#4d6656; --wire:#3a3d3a;
+    --err-bg:#fff3e3; --err-edge:#b8692a; --err-ink:#6a3511;
+    --ok-bg:#eaf4e6;  --ok-edge:#4d7a43;  --ok-ink:#2b4a25;
+    --hint-bg:#ffffff; --hint-edge:#c9cbc4; --hint-ink:#4a4f4b;
+    --focus:#2f6fb3;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#1d211f; --ink:#e6e6e0; --muted:#a3a7a1;
+      --panel:#262b28; --panel-edge:#3d433f; --pocket:#323834;
+      --stand:#3f5848; --stand-hi:#5c7a66; --wire:#b9bcb6;
+      --err-bg:#3a2a1c; --err-edge:#d08a4c; --err-ink:#f6d9bd;
+      --ok-bg:#223320;  --ok-edge:#7fb072;  --ok-ink:#d7ecd1;
+      --hint-bg:#262b28; --hint-edge:#4a514c; --hint-ink:#cfd2cc;
+      --focus:#7fb2ea;
+    }
+  }
+  html,body{margin:0;height:100%;background:var(--bg);overflow:hidden}
+  svg{
+    display:block;width:100%;height:100%;
+    touch-action:none;               /* stops the page scrolling while you drag on a touchscreen */
+    user-select:none;-webkit-user-select:none;
+    font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  }
+  .ink{fill:var(--ink)} .muted{fill:var(--muted)}
+  .lbl{font-size:13px} .title{font-size:14px;font-weight:600}
+  .small{font-size:11px} .readout{font-size:18px;font-weight:600}
+  .panel{fill:var(--panel);stroke:var(--panel-edge)}
+  .pocket{fill:var(--pocket);stroke:transparent;stroke-width:2}
+  .wire{stroke:var(--wire);stroke-width:1.3;fill:none;stroke-linejoin:round}
+  .slot{cursor:grab;outline:none}
+  .slot.out{cursor:default}
+  .slot:focus-visible .pocket,.btn:focus-visible .btnbox{stroke:var(--focus)}
+  .btn{cursor:pointer;outline:none}
+  .btnbox{fill:var(--pocket);stroke:var(--panel-edge);stroke-width:1.5}
+  .btn:hover .btnbox{stroke:var(--muted)}
+  .callout{transition:opacity .2s}
+  .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+  @media (prefers-reduced-motion: reduce){ .callout{transition:none} }
+</style>
+</head>
+<body>
+<svg id="scene" viewBox="0 0 500 400" preserveAspectRatio="xMidYMid meet" aria-label="Jolly balance simulation">
+  <defs>
+    <!-- Reusable colour gradients that give brass and the stand a metallic look -->
+    <linearGradient id="brassH" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0" stop-color="#8f6d22"/><stop offset=".45" stop-color="#e8c96c"/>
+      <stop offset=".7" stop-color="#c49a3c"/><stop offset="1" stop-color="#8a671f"/>
+    </linearGradient>
+    <linearGradient id="brassV" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#f0d47e"/><stop offset=".5" stop-color="#c79d3e"/>
+      <stop offset="1" stop-color="#8a671f"/>
+    </linearGradient>
+    <radialGradient id="ball" cx=".35" cy=".3" r=".75">
+      <stop offset="0" stop-color="#fff4c4"/><stop offset=".35" stop-color="#e3bd55"/>
+      <stop offset=".8" stop-color="#a87e22"/><stop offset="1" stop-color="#6b4e12"/>
+    </radialGradient>
+    <radialGradient id="lead" cx=".4" cy=".08" r=".6">
+      <stop offset="0" stop-color="#a7adb2"/><stop offset=".5" stop-color="#6f757a"/>
+      <stop offset="1" stop-color="#3e4347"/>
+    </radialGradient>
+    <linearGradient id="foil" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#f2f3f1"/><stop offset=".6" stop-color="#c5c9c4"/>
+      <stop offset="1" stop-color="#9da19c"/>
+    </linearGradient>
+    <linearGradient id="standGrad" x1="0" x2="1">
+      <stop offset="0" stop-color="var(--stand)"/><stop offset=".4" stop-color="var(--stand-hi)"/>
+      <stop offset="1" stop-color="var(--stand)"/>
+    </linearGradient>
+  </defs>
+</svg>
+<div id="live" class="sr" aria-live="polite"></div>
+
+<script>
+/* =========================================================================
+   1. SETTINGS
+   ========================================================================= */
+const PIVOT = {x: 200, y: 58};   // where the beam balances on its knife edge
+const R = 140;                   // distance from pivot to each end of the beam
+// All masses in this version are counted in TENTHS of a milligram, so 0.6 mg
+// is stored as 6. Whole numbers add exactly; decimals like 0.1 + 0.2 do not
+// (a computer gets 0.30000000000000004), which would break the balance check.
+const TARGET = 6;                // 0.6 mg needed on top of the 31 mg to balance
+const START_TILT = 12;           // degrees the beam tips left with nothing added
+const MAX_TILT = 13;             // largest tilt the beam settles at
+const STOP_TILT = 15;            // the beam's mechanical stop while swinging
+const LOWER_OFFSET = 182;        // vertical distance from an upper hook to its lower hook
+const PAN_BOTTOM = 88;           // distance from a hook down to the underside of its dish
+// Fixed heights of the two break zig-zags. They stay put while the wires slide
+// through them, so they must sit below the lowest point an upper dish can reach
+// and above the highest point a lower hook can reach.
+const BREAK_Y1 = 186, BREAK_Y2 = 198;
+
+// The weight box. "foil" = small flat milligram weights, "gram" = cylinder weight.
+// "mg" here is in tenths of a milligram (see TARGET above).
+const WEIGHTS = [
+  {id:'m10',  mg:10, label:'1 mg',   kind:'foil', size:16},
+  {id:'m05',  mg:5,  label:'0.5 mg', kind:'foil', size:14},
+  {id:'m02a', mg:2,  label:'0.2 mg', kind:'foil', size:12},
+  {id:'m02b', mg:2,  label:'0.2 mg', kind:'foil', size:12},
+  {id:'m01',  mg:1,  label:'0.1 mg', kind:'foil', size:10},
+];
+// The 31 mg from part 1 (20 + 10 + 1 mg foils). Drawn on the pan, never draggable.
+const LOCKED_FOILS = 3;
+WEIGHTS.forEach(w => w.loc = 'tray');   // each weight is 'tray', 'pan', or 'drag'
+let panOrder = [];                       // ids on the upper right pan, in the order placed
+
+// Messages (split into two lines so they fit between the pans)
+const MSG = {
+  wrongSide: ['Not there, that makes', 'the difference bigger!'],
+  wrongLevel:['Not there, we want to', 'compare at the top.'],
+  hint:      ['Drag masses from the box', 'onto a pan to level the beam.'],
+  balanced:  ['Balanced! 0.6 mg makes', 'up the extra pull.'],
+};
+
+/* =========================================================================
+   2. A SMALL HELPER FOR MAKING SVG SHAPES
+   el('circle', {cx:5, cy:5, r:3}, parent) creates <circle cx="5" cy="5" r="3">
+   and puts it inside "parent".
+   ========================================================================= */
+const NS = 'http://www.w3.org/2000/svg';
+const svg = document.getElementById('scene');
+function el(tag, attrs, parent){
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+
+// Layers: later layers are drawn on top of earlier ones.
+const standLayer   = el('g', {}, svg);
+const sidesLayer   = el('g', {}, svg);
+const beamLayer    = el('g', {}, svg);
+const trayLayer    = el('g', {}, svg);
+const calloutLayer = el('g', {class:'callout', opacity:0}, svg);
+const ghostLayer   = el('g', {'pointer-events':'none'}, svg);
+
+/* =========================================================================
+   3. THE FIXED STAND (column, base, pointer scale) — never moves
+   ========================================================================= */
+// FOOT_Y is the height of the bottom of the base. It sits just above the
+// lowest point the upper dishes reach at full tilt (about y = 182), between
+// the upper and lower pans, where the platform was in the original.
+const FOOT_Y = 176;
+el('rect', {x:193, y:60, width:14, height:FOOT_Y - 18 - 60, fill:'url(#standGrad)'}, standLayer);  // column
+el('rect', {x:188, y:FOOT_Y - 24, width:24, height:6, fill:'url(#brassH)'}, standLayer);         // brass collar
+el('path', {d:`M168,${FOOT_Y} L232,${FOOT_Y} L222,${FOOT_Y-18} L178,${FOOT_Y-18} Z`,               // foot
+            fill:'url(#standGrad)'}, standLayer);
+el('rect', {x:191, y:47, width:18, height:18, rx:2, fill:'url(#brassV)'}, standLayer);
+
+// The huge lead sphere: only its top edge shows. Its centre is far below the
+// frame, so a radius of 220 gives a gentle curve. Its top (y = 368) is just
+// below the lowest point the lower left dish can reach (about y = 364).
+el('circle', {cx:62, cy:588, r:220, fill:'url(#lead)', stroke:'#2e3235', 'stroke-width':1}, standLayer);
+el('text', {x:186, y:390, class:'muted small'}, standLayer).textContent = 'lead sphere (\u2248 5.8 t)';
+
+// Pointer scale: a short arc of tick marks above the pivot, read by the needle.
+for (let a = -20; a <= 20; a += 5){
+  const r1 = a === 0 ? 46 : 48, r2 = 53, rad = a * Math.PI / 180;
+  el('line', {
+    x1: PIVOT.x + r1*Math.sin(rad), y1: PIVOT.y - r1*Math.cos(rad),
+    x2: PIVOT.x + r2*Math.sin(rad), y2: PIVOT.y - r2*Math.cos(rad),
+    stroke:'#9c7a2a', 'stroke-width': a === 0 ? 1.8 : 1
+  }, standLayer);
+}
+
+/* =========================================================================
+   4. THE BEAM (rotates about the pivot)
+   Drawn with the pivot at (0,0); a "transform" later moves and rotates it.
+   ========================================================================= */
+const beam = el('g', {}, beamLayer);
+// Outer outline plus four window cut-outs. fill-rule="evenodd" makes the
+// inner shapes into holes, like the open brass frame in the photo.
+el('path', {
+  d: 'M-146,-2.5 L-24,-13 L24,-13 L146,-2.5 L146,2.5 L24,11 L-24,11 L-146,2.5 Z ' +
+     'M-128,-1.2 L-82,-5.2 L-82,4.1 L-128,1.2 Z  M-76,-5.7 L-30,-9.8 L-30,7.6 L-76,4.6 Z ' +
+     'M128,-1.2 L82,-5.2 L82,4.1 L128,1.2 Z  M76,-5.7 L30,-9.8 L30,7.6 L76,4.6 Z',
+  'fill-rule':'evenodd', fill:'url(#brassV)', stroke:'#8a671f', 'stroke-width':.6
+}, beam);
+el('circle', {cx:0, cy:0, r:16, fill:'none', stroke:'url(#brassH)', 'stroke-width':4.5}, beam);
+el('path', {d:'M-5,-5 L5,-5 L0,3 Z', fill:'#5a4515'}, beam);              // knife edge
+el('line', {x1:0, y1:-18, x2:0, y2:-44, stroke:'#9c7a2a', 'stroke-width':2}, beam); // needle
+el('line', {x1:-4, y1:-38, x2:4, y2:-38, stroke:'#9c7a2a', 'stroke-width':1.5}, beam);
+el('circle', {cx:0, cy:-45, r:2, fill:'#9c7a2a'}, beam);
+for (const s of [-1, 1]){                                                // end rods + hooks
+  el('line', {x1:146*s, y1:0, x2:160*s, y2:0, stroke:'#9c7a2a', 'stroke-width':1.2}, beam);
+  el('circle', {cx:161*s, cy:0, r:1.8, fill:'#9c7a2a'}, beam);
+  el('circle', {cx:140*s, cy:0, r:3, fill:'#5a4515'}, beam);
+}
+
+/* =========================================================================
+   5. THE HANGERS (pan stirrups, wires with zig-zag breaks, lower pans)
+   Each side is one group with its origin at the beam end; we move the whole
+   group as the beam tilts. The pans hang straight down (gravity), so the
+   groups move but never rotate.
+   ========================================================================= */
+function drawPan(parent){
+  el('line', {x1:0, y1:0, x2:0, y2:9, stroke:'#9c7a2a', 'stroke-width':2.2}, parent);
+  el('circle', {cx:0, cy:10, r:2.5, fill:'none', stroke:'#9c7a2a', 'stroke-width':1.5}, parent);
+  // Stirrup: two straight sides joined by a semicircular arch
+  el('path', {d:'M-32,80 L-32,44 A32,32 0 0 1 32,44 L32,80', fill:'none',
+              stroke:'url(#brassH)', 'stroke-width':3}, parent);
+  // Dish
+  el('path', {d:'M-36,80 L36,80 Q31,87 21,88 L-21,88 Q-31,87 -36,80 Z',
+              fill:'url(#brassH)', stroke:'#8a671f', 'stroke-width':.6}, parent);
+}
+function drawBall(parent, cx, cy){
+  el('circle', {cx, cy, r:20, fill:'url(#ball)', stroke:'#6b4e12', 'stroke-width':.5}, parent);
+}
+// The wires and break marks live in their own layer, in whole-scene
+// coordinates, because they must NOT move along with the pans.
+const wiresLayer = el('g', {}, sidesLayer);
+function buildSide(){
+  // Wire: its path is recalculated every frame in render()
+  const wire = el('path', {class:'wire'}, wiresLayer);
+  // Axis-style break: two short horizontal zig-zags at fixed heights. Only
+  // their left-right position is updated, so they stay centred on the wire.
+  const zig = el('g', {}, wiresLayer);
+  for (const yc of [BREAK_Y1, BREAK_Y2]){
+    el('path', {d:`M-9,${yc} L-6,${yc-2.5} L-3,${yc+2.5} L0,${yc-2.5} L3,${yc+2.5} L6,${yc-2.5} L9,${yc}`,
+                class:'wire'}, zig);
+  }
+  const g = el('g', {}, sidesLayer);
+  const upper = el('g', {}, g);
+  drawPan(upper);
+  const lower = el('g', {transform:`translate(0,${LOWER_OFFSET})`}, g);
+  drawPan(lower);
+  return {g, upper, lower, wire, zig};
+}
+const left = buildSide();
+const right = buildSide();
+drawBall(left.lower, 0, 60);      // sphere on the LOWER LEFT pan (closer to Earth)
+drawBall(right.upper, -8, 60);    // sphere on the UPPER RIGHT pan (shifted to leave room)
+
+// Stack of added weights on the upper right pan, plus an invisible grab area
+const stackG = el('g', {}, right.upper);
+const panGrab = el('rect', {x:11, y:26, width:24, height:56, fill:'transparent'}, right.upper);
+
+/* =========================================================================
+   6. DRAWING A WEIGHT ICON (used in the box and while dragging)
+   ========================================================================= */
+function drawIcon(w, parent, cx, cy, scale){
+  const g = el('g', {transform:`translate(${cx},${cy}) scale(${scale})`}, parent);
+  if (w.kind === 'foil'){
+    const h = w.size / 2;
+    // A flat square of metal foil with one corner folded up as a handle
+    el('path', {d:`M${-h},${-h} L${h-4},${-h} L${h},${-h+4} L${h},${h} L${-h},${h} Z`,
+                fill:'url(#foil)', stroke:'#7f837e', 'stroke-width':.7}, g);
+    el('path', {d:`M${h-4},${-h} L${h-4},${-h+4} L${h},${-h+4}`,
+                fill:'none', stroke:'#7f837e', 'stroke-width':.7}, g);
+  } else {
+    el('rect', {x:-7, y:-3, width:14, height:11, rx:2, fill:'url(#brassH)', stroke:'#8a671f', 'stroke-width':.6}, g);
+    el('rect', {x:-2.5, y:-7, width:5, height:4, fill:'url(#brassH)'}, g);
+    el('circle', {cx:0, cy:-8.5, r:3, fill:'url(#ball)'}, g);
+  }
+  return g;
+}
+
+/* =========================================================================
+   7. THE WEIGHT BOX (tray), readout, and reset button
+   ========================================================================= */
+el('rect', {x:388, y:14, width:104, height:372, rx:6, class:'panel'}, trayLayer);
+el('text', {x:440, y:36, 'text-anchor':'middle', class:'ink title'}, trayLayer).textContent = 'Masses';
+
+WEIGHTS.forEach((w, i) => {
+  const y0 = 48 + i * 38;
+  const g = el('g', {class:'slot', tabindex:0, role:'button'}, trayLayer);
+  el('rect', {x:396, y:y0, width:88, height:32, rx:5, class:'pocket'}, g);
+  const iconG = el('g', {}, g);
+  drawIcon(w, iconG, 416, y0 + 16, 1);
+  const label = el('text', {x:436, y:y0 + 20.5, class:'ink lbl'}, g);
+  label.textContent = w.label;
+  w.slot = {g, iconG, label};
+
+  // Mouse/touch: press on a weight in the box to start dragging it
+  g.addEventListener('pointerdown', e => { if (w.loc === 'tray') startDrag(w, 'tray', e); });
+  // Keyboard: Enter or Space moves the weight to the upper right pan, or back
+  g.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    if (w.loc === 'tray') dropOn(w, 'UR');
+    else if (w.loc === 'pan'){ panOrder = panOrder.filter(id => id !== w.id); w.loc = 'tray'; refresh(); }
+  });
+});
+
+el('text', {x:440, y:264, 'text-anchor':'middle', class:'muted small'}, trayLayer).textContent = 'Added to upper right';
+const readout = el('text', {x:440, y:286, 'text-anchor':'middle', class:'ink readout'}, trayLayer);
+el('text', {x:440, y:304, 'text-anchor':'middle', class:'muted small'}, trayLayer).textContent = '(plus 31 mg locked)';
+
+const resetBtn = el('g', {class:'btn', tabindex:0, role:'button', 'aria-label':'Reset'}, trayLayer);
+el('rect', {x:404, y:342, width:72, height:28, rx:5, class:'btnbox'}, resetBtn);
+el('text', {x:440, y:361, 'text-anchor':'middle', class:'ink lbl'}, resetBtn).textContent = 'Reset';
+resetBtn.addEventListener('click', reset);
+resetBtn.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); reset(); } });
+
+/* =========================================================================
+   8. PHYSICS OF THE TILT
+   The real imbalance (31 mg on 5 kg) would be invisible, so the tilt is
+   exaggerated. A square root makes even a 1 mg difference visible.
+   ========================================================================= */
+function massOnPan(){
+  return panOrder.reduce((sum, id) => sum + WEIGHTS.find(w => w.id === id).mg, 0);
+}
+function targetTilt(m){
+  const d = TARGET - m;              // positive = left side still heavier
+  if (d === 0) return 0;
+  const t = START_TILT * Math.sqrt(Math.abs(d) / TARGET);
+  return Math.sign(d) * Math.min(MAX_TILT, t);
+}
+
+// Tilt angle t (degrees; positive = left end down) and its angular speed v.
+// The beam is modelled as a damped spring so it swings and settles.
+let t = START_TILT, v = 0, tGoal = START_TILT, running = false, lastTime = 0;
+const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function kick(){
+  if (!running){ running = true; lastTime = performance.now(); requestAnimationFrame(tick); }
+}
+function tick(now){
+  const dt = Math.min(0.033, (now - lastTime) / 1000);
+  lastTime = now;
+  if (reduceMotion){ t = tGoal; v = 0; }
+  else {
+    const K = 28, C = 4.2, steps = 4, h = dt / steps;   // stiffness, damping
+    for (let i = 0; i < steps; i++){
+      const a = -K * (t - tGoal) - C * v;               // spring pull + friction
+      v += a * h; t += v * h;
+    }
+    if (Math.abs(t) > STOP_TILT){ t = Math.sign(t) * STOP_TILT; v = 0; } // the beam's mechanical stop
+  }
+  render();
+  if (Math.abs(t - tGoal) < 0.01 && Math.abs(v) < 0.01){
+    t = tGoal; v = 0; render(); running = false; return;
+  }
+  requestAnimationFrame(tick);
+}
+
+// Where the two beam ends are for the current tilt
+function ends(){
+  const r = t * Math.PI / 180;
+  return {
+    L: {x: PIVOT.x - R*Math.cos(r), y: PIVOT.y + R*Math.sin(r)},
+    R: {x: PIVOT.x + R*Math.cos(r), y: PIVOT.y - R*Math.sin(r)},
+  };
+}
+function render(){
+  const E = ends();
+  // SVG rotates clockwise for positive angles, so "left end down" is negative
+  beam.setAttribute('transform', `translate(${PIVOT.x},${PIVOT.y}) rotate(${-t})`);
+  for (const [side, e] of [[left, E.L], [right, E.R]]){
+    side.g.setAttribute('transform', `translate(${e.x},${e.y})`);
+    // Wire: from under the upper dish to the first break mark, a gap, then
+    // from the second break mark down to the lower hook. "M" lifts the pen.
+    side.wire.setAttribute('d',
+      `M${e.x},${e.y + PAN_BOTTOM} L${e.x},${BREAK_Y1} ` +
+      `M${e.x},${BREAK_Y2} L${e.x},${e.y + LOWER_OFFSET}`);
+    side.zig.setAttribute('transform', `translate(${e.x},0)`);
+  }
+}
+
+/* =========================================================================
+   9. DRAG AND DROP
+   ========================================================================= */
+let drag = null;   // {w, from, pointerId} while something is being dragged
+
+// Convert a mouse position on screen into viewBox coordinates
+function toSvg(e){
+  const p = svg.createSVGPoint();
+  p.x = e.clientX; p.y = e.clientY;
+  return p.matrixTransform(svg.getScreenCTM().inverse());
+}
+
+// Which pan (if any) is under point p? UL/UR = upper left/right, LL/LR = lower.
+function zoneAt(p){
+  const E = ends();
+  const sides = [['L', E.L], ['R', E.R]];
+  for (const [s, e] of sides){
+    if (Math.abs(p.x - e.x) > 42) continue;
+    if (p.y >= e.y - 6 && p.y <= e.y + PAN_BOTTOM + 8) return 'U' + s;
+    if (p.y >= e.y + LOWER_OFFSET - 6 && p.y <= e.y + LOWER_OFFSET + PAN_BOTTOM + 10) return 'L' + s;
+  }
+  return null;
+}
+
+function startDrag(w, from, e){
+  if (drag) return;                 // ignore a second finger
+  e.preventDefault();
+  if (from === 'pan') panOrder = panOrder.filter(id => id !== w.id);
+  w.loc = 'drag';
+  drag = {w, from, pointerId: e.pointerId};
+  svg.setPointerCapture(e.pointerId);   // keep receiving moves even outside the svg
+  ghostLayer.innerHTML = '';
+  drawIcon(w, ghostLayer, 0, 0, 1.5);
+  const tag = el('text', {x:16, y:5, class:'ink lbl'}, ghostLayer);
+  tag.textContent = w.label;
+  moveGhost(toSvg(e));
+  refresh();
+}
+function moveGhost(p){ ghostLayer.setAttribute('transform', `translate(${p.x},${p.y})`); }
+
+svg.addEventListener('pointermove', e => {
+  if (drag && e.pointerId === drag.pointerId) moveGhost(toSvg(e));
+});
+svg.addEventListener('pointerup', e => {
+  if (!drag || e.pointerId !== drag.pointerId) return;
+  const w = drag.w; drag = null; ghostLayer.innerHTML = '';
+  dropOn(w, zoneAt(toSvg(e)));
+});
+svg.addEventListener('pointercancel', e => {
+  if (!drag || e.pointerId !== drag.pointerId) return;
+  const {w, from} = drag; drag = null; ghostLayer.innerHTML = '';
+  if (from === 'pan'){ w.loc = 'pan'; panOrder.push(w.id); } else w.loc = 'tray';
+  refresh();
+});
+
+// Grab the top weight of the stack on the upper right pan to take it off
+panGrab.addEventListener('pointerdown', e => {
+  if (!panOrder.length) return;
+  startDrag(WEIGHTS.find(w => w.id === panOrder[panOrder.length - 1]), 'pan', e);
+});
+
+// The rules of where a weight may go
+function dropOn(w, zone){
+  interacted = true;
+  if (zone === 'UR'){ w.loc = 'pan'; panOrder.push(w.id); }
+  else {
+    w.loc = 'tray';
+    if (zone === 'UL' || zone === 'LL') showError(MSG.wrongSide);
+    else if (zone === 'LR') showError(MSG.wrongLevel);
+  }
+  refresh();
+}
+
+function reset(){
+  WEIGHTS.forEach(w => w.loc = 'tray');
+  panOrder = []; interacted = false;
+  errorShowing = false; clearTimeout(errTimer);
+  refresh();
+}
+
+/* =========================================================================
+   10. MESSAGES (the callout box between the pans)
+   ========================================================================= */
+let interacted = false, errorShowing = false, errTimer = null;
+const live = document.getElementById('live');
+
+function showCallout(kind, lines){
+  calloutLayer.innerHTML = '';
+  const box = el('rect', {rx:6, fill:`var(--${kind}-bg)`, stroke:`var(--${kind}-edge)`, 'stroke-width':1.2}, calloutLayer);
+  let wMax = 0;
+  lines.forEach((line, i) => {
+    const tx = el('text', {x:200, y:226 + i*17, 'text-anchor':'middle',
+                           'font-size':12.5, fill:`var(--${kind}-ink)`}, calloutLayer);
+    tx.textContent = line;
+    wMax = Math.max(wMax, tx.getComputedTextLength() || line.length * 6.4);
+  });
+  const bw = wMax + 24;
+  box.setAttribute('x', 200 - bw/2); box.setAttribute('y', 208);
+  box.setAttribute('width', bw); box.setAttribute('height', 44);
+  calloutLayer.setAttribute('opacity', 1);
+  live.textContent = lines.join(' ');
+}
+function hideCallout(){ calloutLayer.setAttribute('opacity', 0); }
+function showError(lines){
+  errorShowing = true;
+  showCallout('err', lines);
+  clearTimeout(errTimer);
+  errTimer = setTimeout(() => { errorShowing = false; updateStatus(); }, 2600);
+}
+function updateStatus(){
+  if (errorShowing) return;
+  if (massOnPan() === TARGET) showCallout('ok', MSG.balanced);
+  else if (!interacted) showCallout('hint', MSG.hint);
+  else hideCallout();
+}
+
+/* =========================================================================
+   11. REFRESH: redraw the box, the stack on the pan, the readout, the goal tilt
+   ========================================================================= */
+function refresh(){
+  // Box: a weight that's out of the box leaves an empty pocket with a faded label
+  WEIGHTS.forEach(w => {
+    const inTray = w.loc === 'tray';
+    w.slot.iconG.setAttribute('opacity', inTray ? 1 : 0);
+    w.slot.label.setAttribute('opacity', inTray ? 1 : .35);
+    w.slot.g.classList.toggle('out', !inTray);
+    w.slot.g.setAttribute('aria-label', inTray
+      ? `${w.label} weight in box. Press Enter to put it on the upper right pan.`
+      : `${w.label} weight is on the upper right pan. Press Enter to return it to the box.`);
+  });
+
+  // Stack on the upper right pan, built upward from the dish surface (y = 80)
+  stackG.innerHTML = '';
+  let y = 80;
+  for (let i = 0; i < LOCKED_FOILS; i++){   // the 31 mg from part 1, always at the bottom
+    y -= 3;
+    el('rect', {x:13, y, width:16, height:2.6, fill:'url(#foil)', stroke:'#7f837e', 'stroke-width':.4}, stackG);
+  }
+  panOrder.forEach(id => {
+    const w = WEIGHTS.find(x => x.id === id);
+    if (w.kind === 'foil'){
+      y -= 3;
+      el('rect', {x:13, y, width:16, height:2.6, fill:'url(#foil)', stroke:'#7f837e', 'stroke-width':.4}, stackG);
+    } else {
+      y -= 9;
+      el('rect', {x:15, y, width:12, height:9, rx:1.5, fill:'url(#brassH)', stroke:'#8a671f', 'stroke-width':.5}, stackG);
+      el('circle', {cx:21, cy:y - 1.5, r:2.2, fill:'url(#ball)'}, stackG);
+      y -= 3;
+    }
+  });
+  panGrab.style.cursor = panOrder.length ? 'grab' : 'default';
+
+  const m = massOnPan();
+  readout.textContent = `${(m / 10).toFixed(1)} mg`;   // 6 -> "0.6 mg"
+  readout.setAttribute('fill', m === TARGET ? 'var(--ok-edge)' : 'var(--ink)');
+
+  tGoal = targetTilt(m);
+  kick();
+  updateStatus();
+}
+
+render();
+refresh();
+</script>
+</body>
+</html>
