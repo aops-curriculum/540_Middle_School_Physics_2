@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gravimeter Drop: Position vs. Time Fit</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #fff;
+  }
+  body {
+    width: min(600px, 100vw);
+    height: min(500px, calc(100vw * 500 / 600));
+    max-height: 100vh;
+    margin: 0 auto;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    position: relative;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  #overlay {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 40px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 6px 12px 8px;
+    gap: 5px;
+    background: linear-gradient(transparent, rgba(255, 255, 255, 0.94));
+    border-top: 1px solid rgba(0, 0, 0, 0.06);
+    pointer-events: none;
+  }
+  #overlay > * { pointer-events: auto; }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .row label {
+    color: #333;
+    font-size: 11px;
+    white-space: nowrap;
+    width: 72px;
+    flex-shrink: 0;
+  }
+  .row input[type="range"] {
+    flex: 1;
+    accent-color: #c0392b;
+    min-width: 0;
+  }
+  .row .val {
+    color: #222;
+    font-size: 11px;
+    font-weight: 600;
+    width: 48px;
+    text-align: right;
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+  }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div id="overlay">
+  <div class="row">
+    <!-- One slider: the value of g. Steps of 0.001 m/s² between 9.700 and 9.900.
+         Students can also click the slider and use the arrow keys for single steps. -->
+    <label for="gSlider">g (m/s²)</label>
+    <input type="range" id="gSlider" min="9.700" max="9.900" value="9.750" step="0.001">
+    <span class="val" id="gVal">9.750</span>
+  </div>
+</div>
+
+<script>
+(function () {
+'use strict';
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+//------ PAGE SIZE (same as position_time_fit) --------------
+const LOGICAL_W = 600;
+const LOGICAL_H = 500;
+const CTRL_H = 40;          // height of the slider strip at the bottom
+
+//------ AXES -----------------------------------------------
+// A realistic absolute gravimeter drops its test mass about 20 cm
+// in about 0.2 s, so the axes cover 0-0.20 s and 0-0.16 m.
+const XMIN = 0, XMAX = 0.20;
+const YMIN = 0, YMAX = 0.16;
+const X_TICK = 0.02, X_SUBTICK = 0.01;
+const Y_TICK = 0.02, Y_SUBTICK = 0.01;
+const TICK_DECIMALS = 2;    // tick numbers shown as 0.00, 0.02, 0.04, ...
+
+const X_LABEL = 'Time (s)';
+const Y_LABEL = 'Position (m)';
+
+//------ DATA POINTS ----------------------------------------
+// Generated from x = ½ (9.795 m/s²) t², then rounded to the
+// nearest micrometer (0.000001 m). Position is the distance
+// fallen since release.
+const XDATA = [0.035, 0.070, 0.105, 0.140, 0.175];
+const YDATA = [0.005999, 0.023998, 0.053995, 0.095991, 0.149986];
+
+// Space (in pixels) between the plot frame and the canvas edges.
+const PAD = {
+  left: 64,
+  right: 18,
+  top: 34,
+  bottom: 36,
+};
+
+//------ STARTING VALUE OF g --------------------------------
+const G_DEFAULT = 9.750;
+
+//------ ZOOM BOX -------------------------------------------
+// A magnified view centered on one data point (the last one,
+// where a wrong g makes the biggest position error, since x grows as t²).
+const ZOOM_INDEX = XDATA.length - 1;   // which data point to magnify
+const ZOOM_MAG = 250;                  // magnification, same on both axes
+const ZOOM_W = 180;                    // box size at full 600-px width
+const ZOOM_H = 140;
+const ZOOM_INSET = 10;                 // gap between box and plot frame
+const ZOOM_GRID_T = 0.00005;           // zoom grid spacing: 0.05 ms
+const ZOOM_GRID_X = 0.00005;           // zoom grid spacing: 0.05 mm
+
+let W = LOGICAL_W;
+let H = LOGICAL_H;
+let dpr = 1;
+
+// Current slider setting
+let gValue = G_DEFAULT;
+
+const gSlider = document.getElementById('gSlider');
+const gVal = document.getElementById('gVal');
+
+//------ EQUATION TEXT --------------------------------------
+function equationText() {
+  return `position = ½ × (${gValue.toFixed(3)} m/s²) × (time)²`;
+}
+
+function drawEquation() {
+  const r = plotRect();
+  const text = equationText();
+  ctx.font = '13px Segoe UI, Arial, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  const tw = ctx.measureText(text).width;
+  const cx = r.left + r.width / 2;
+  const cy = r.top - 14;
+
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(cx - tw / 2 - 6, cy - 9, tw + 12, 18);
+  ctx.fillStyle = '#000';
+  ctx.fillText(text, cx, cy);
+}
+
+//------ THE MODEL CURVE: x = ½ g t² ------------------------
+function curve(t) {
+  return 0.5 * gValue * t * t;
+}
+
+//------ COORDINATE CONVERSION ------------------------------
+// The rectangle (in pixels) where the graph itself is drawn.
+function plotRect() {
+  const top = PAD.top;
+  const left = PAD.left;
+  const right = W - PAD.right;
+  const bottom = H - CTRL_H - PAD.bottom;
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
+}
+
+// Convert a physics point (t in s, x in m) into canvas pixels.
+// Canvas y grows downward, so the vertical formula is flipped.
+function dataToCanvas(x, y) {
+  const r = plotRect();
+  return {
+    x: r.left + (x - XMIN) / (XMAX - XMIN) * r.width,
+    y: r.top + (YMAX - y) / (YMAX - YMIN) * r.height,
+  };
+}
+
+function resizeCanvas() {
+  const rect = canvas.getBoundingClientRect();
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = rect.width || LOGICAL_W;
+  H = rect.height || LOGICAL_H;
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  draw();
+}
+
+//------ GRID -----------------------------------------------
+// Counting with whole numbers (i = 0, 1, 2, ...) and computing
+// x = XMIN + i * step avoids the rounding drift you get from
+// adding 0.01 over and over.
+function drawGrid(xStep, yStep, color) {
+  const r = plotRect();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1;
+
+  const nx = Math.round((XMAX - XMIN) / xStep);
+  for (let i = 0; i <= nx; i++) {
+    const p = dataToCanvas(XMIN + i * xStep, YMIN);
+    ctx.beginPath();
+    ctx.moveTo(p.x, r.top);
+    ctx.lineTo(p.x, r.bottom);
+    ctx.stroke();
+  }
+
+  const ny = Math.round((YMAX - YMIN) / yStep);
+  for (let j = 0; j <= ny; j++) {
+    const p = dataToCanvas(XMIN, YMIN + j * yStep);
+    ctx.beginPath();
+    ctx.moveTo(r.left, p.y);
+    ctx.lineTo(r.right, p.y);
+    ctx.stroke();
+  }
+}
+
+//------ TICK MARKS AND NUMBERS -----------------------------
+function drawTicks() {
+  const r = plotRect();
+  const tickMajor = 6;
+  const tickMinor = 3;
+
+  ctx.strokeStyle = '#000';
+  ctx.fillStyle = '#000';
+  ctx.lineWidth = 1;
+  ctx.font = '12px Segoe UI, Arial, sans-serif';
+  ctx.textBaseline = 'middle';
+
+  // Horizontal axis: ticks on bottom and top, numbers below the bottom
+  const nx = Math.round((XMAX - XMIN) / X_SUBTICK);
+  const xRatio = Math.round(X_TICK / X_SUBTICK);   // subticks per major tick
+  for (let i = 0; i <= nx; i++) {
+    const x = XMIN + i * X_SUBTICK;
+    const p = dataToCanvas(x, YMIN);
+    const major = (i % xRatio === 0);
+    const len = major ? tickMajor : tickMinor;
+
+    ctx.beginPath();
+    ctx.moveTo(p.x, r.bottom);
+    ctx.lineTo(p.x, r.bottom + len);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(p.x, r.top);
+    ctx.lineTo(p.x, r.top - len);
+    ctx.stroke();
+
+    if (major) {
+      const label = x.toFixed(TICK_DECIMALS);
+      const tw = ctx.measureText(label).width;
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(p.x - tw / 2 - 2, r.bottom + len + 2, tw + 4, 14);
+      ctx.fillStyle = '#000';
+      ctx.fillText(label, p.x, r.bottom + len + 10);
+    }
+  }
+
+  // Vertical axis: ticks on left and right, numbers to the left
+  const ny = Math.round((YMAX - YMIN) / Y_SUBTICK);
+  const yRatio = Math.round(Y_TICK / Y_SUBTICK);
+  for (let j = 0; j <= ny; j++) {
+    const y = YMIN + j * Y_SUBTICK;
+    const p = dataToCanvas(XMIN, y);
+    const major = (j % yRatio === 0);
+    const len = major ? tickMajor : tickMinor;
+
+    ctx.beginPath();
+    ctx.moveTo(r.right, p.y);
+    ctx.lineTo(r.right + len, p.y);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(r.left, p.y);
+    ctx.lineTo(r.left - len, p.y);
+    ctx.stroke();
+
+    if (major) {
+      const label = y.toFixed(TICK_DECIMALS);
+      const tw = ctx.measureText(label).width;
+      const tx = r.left - len - 4;     // right edge of the number
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(tx - tw - 2, p.y - 7, tw + 4, 14);
+      ctx.fillStyle = '#000';
+      ctx.fillText(label, tx, p.y);
+    }
+  }
+}
+
+function drawAxes() {
+  const r = plotRect();
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(r.left, r.top, r.width, r.height);
+}
+
+function drawAxisLabels() {
+  const r = plotRect();
+  ctx.font = '12px Segoe UI, Arial, sans-serif';
+
+  // Horizontal axis label
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(r.left + r.width / 2 - 70, r.bottom + 24, 140, 16);
+  ctx.fillStyle = '#000';
+  ctx.fillText(X_LABEL, r.left + r.width / 2, r.bottom + 26);
+
+  // Vertical axis label (rotated 90° counterclockwise)
+  ctx.save();
+  ctx.translate(r.left - 52, r.top + r.height / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(-60, -2, 120, 16);
+  ctx.fillStyle = '#000';
+  ctx.fillText(Y_LABEL, 0, 0);
+  ctx.restore();
+}
+
+//------ RED DASHED MODEL CURVE -----------------------------
+function drawCurve() {
+  const r = plotRect();
+  ctx.save();
+  // Clip: anything drawn outside the plot frame is hidden
+  ctx.beginPath();
+  ctx.rect(r.left, r.top, r.width, r.height);
+  ctx.clip();
+
+  ctx.strokeStyle = 'red';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([6, 4]);
+  ctx.beginPath();
+
+  const steps = Math.max(400, Math.round(r.width * 2));
+  for (let i = 0; i <= steps; i++) {
+    const t = XMIN + (XMAX - XMIN) * i / steps;
+    const p = dataToCanvas(t, curve(t));
+    if (i === 0) ctx.moveTo(p.x, p.y);
+    else ctx.lineTo(p.x, p.y);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+//------ BLUE DATA POINTS -----------------------------------
+function drawPoints() {
+  const dotR = 5;
+  ctx.fillStyle = 'blue';
+  for (let i = 0; i < XDATA.length; i++) {
+    const p = dataToCanvas(XDATA[i], YDATA[i]);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, dotR, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+//------ ZOOM BOX GEOMETRY ----------------------------------
+// The box sits in the empty upper-left corner of the plot.
+// Its size scales with the canvas so it never covers the data.
+function zoomRect() {
+  const r = plotRect();
+  const s = W / LOGICAL_W;
+  const width = ZOOM_W * s;
+  const height = ZOOM_H * s;
+  const left = r.left + ZOOM_INSET * s;
+  const top = r.top + ZOOM_INSET * s;
+  return { left, top, width, height, right: left + width, bottom: top + height };
+}
+
+// Pixels per second and pixels per meter inside the zoom box:
+// the main graph's scales multiplied by ZOOM_MAG.
+function zoomScales() {
+  const r = plotRect();
+  return {
+    pxPerS: r.width / (XMAX - XMIN) * ZOOM_MAG,
+    pxPerM: r.height / (YMAX - YMIN) * ZOOM_MAG,
+  };
+}
+
+// Convert a physics point (t, x) into canvas pixels inside the zoom box.
+// The magnified data point sits at the center of the box.
+function zoomToCanvas(t, x) {
+  const z = zoomRect();
+  const s = zoomScales();
+  const cx = z.left + z.width / 2;
+  const cy = z.top + z.height / 2;
+  return {
+    x: cx + (t - XDATA[ZOOM_INDEX]) * s.pxPerS,
+    y: cy - (x - YDATA[ZOOM_INDEX]) * s.pxPerM,
+  };
+}
+
+//------ MARKER AROUND THE MAGNIFIED POINT ------------------
+// A small square around the data point on the main graph,
+// with two lines leading to the zoom box.
+function drawZoomConnector() {
+  const z = zoomRect();
+  const p = dataToCanvas(XDATA[ZOOM_INDEX], YDATA[ZOOM_INDEX]);
+  const half = 9;
+
+  ctx.strokeStyle = '#888';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(p.x - half, p.y - half, 2 * half, 2 * half);
+
+  ctx.beginPath();
+  ctx.moveTo(z.right, z.top);
+  ctx.lineTo(p.x - half, p.y - half);
+  ctx.moveTo(z.right, z.bottom);
+  ctx.lineTo(p.x - half, p.y + half);
+  ctx.stroke();
+}
+
+//------ THE ZOOM BOX ---------------------------------------
+function drawZoomBox() {
+  const z = zoomRect();
+  const s = zoomScales();
+  const t0 = XDATA[ZOOM_INDEX];
+  const x0 = YDATA[ZOOM_INDEX];
+
+  // How much time and position the box spans on each side of its center
+  const halfT = (z.width / 2) / s.pxPerS;
+  const halfX = (z.height / 2) / s.pxPerM;
+
+  ctx.save();
+
+  // White background, then clip so nothing spills outside the box
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(z.left, z.top, z.width, z.height);
+  ctx.beginPath();
+  ctx.rect(z.left, z.top, z.width, z.height);
+  ctx.clip();
+
+  // Light grid, lined up so one vertical and one horizontal
+  // grid line pass through the data point
+  ctx.strokeStyle = '#e0e0e0';
+  ctx.lineWidth = 1;
+  const nT = Math.ceil(halfT / ZOOM_GRID_T);
+  for (let k = -nT; k <= nT; k++) {
+    const p = zoomToCanvas(t0 + k * ZOOM_GRID_T, x0);
+    ctx.beginPath();
+    ctx.moveTo(p.x, z.top);
+    ctx.lineTo(p.x, z.bottom);
+    ctx.stroke();
+  }
+  const nX = Math.ceil(halfX / ZOOM_GRID_X);
+  for (let k = -nX; k <= nX; k++) {
+    const p = zoomToCanvas(t0, x0 + k * ZOOM_GRID_X);
+    ctx.beginPath();
+    ctx.moveTo(z.left, p.y);
+    ctx.lineTo(z.right, p.y);
+    ctx.stroke();
+  }
+
+  // Magnified model curve
+  ctx.strokeStyle = 'red';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([6, 4]);
+  ctx.beginPath();
+  const steps = 60;
+  for (let i = 0; i <= steps; i++) {
+    const t = t0 - halfT + 2 * halfT * i / steps;
+    const p = zoomToCanvas(t, curve(t));
+    if (i === 0) ctx.moveTo(p.x, p.y);
+    else ctx.lineTo(p.x, p.y);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Magnified data point
+  const c = zoomToCanvas(t0, x0);
+  ctx.fillStyle = 'blue';
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, 3.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Captions
+  ctx.font = '10px Segoe UI, Arial, sans-serif';
+  ctx.textAlign = 'left';
+
+  const title = `Magnified ×${ZOOM_MAG}`;
+  ctx.textBaseline = 'top';
+  let tw = ctx.measureText(title).width;
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(z.left + 2, z.top + 2, tw + 4, 13);
+  ctx.fillStyle = '#000';
+  ctx.fillText(title, z.left + 4, z.top + 3);
+
+  const gridNote = 'Grid: 0.05 ms × 0.05 mm';
+  ctx.textBaseline = 'bottom';
+  tw = ctx.measureText(gridNote).width;
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(z.left + 2, z.bottom - 15, tw + 4, 13);
+  ctx.fillStyle = '#555';
+  ctx.fillText(gridNote, z.left + 4, z.bottom - 3);
+
+  // If the curve misses the box entirely, say which way it went.
+  // The curve rises with time, so it is lowest at the box's left
+  // edge and highest at the box's right edge.
+  let hint = null;
+  if (curve(t0 - halfT) > x0 + halfX) hint = '▲ curve is above this view';
+  else if (curve(t0 + halfT) < x0 - halfX) hint = '▼ curve is below this view';
+  if (hint) {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const hx = z.left + z.width / 2;
+    const hy = z.top + z.height / 2 + 20 * (W / LOGICAL_W);
+    tw = ctx.measureText(hint).width;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(hx - tw / 2 - 3, hy - 7, tw + 6, 14);
+    ctx.fillStyle = '#c0392b';
+    ctx.fillText(hint, hx, hy);
+  }
+
+  ctx.restore();
+
+  // Border drawn last so it sits on top
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(z.left, z.top, z.width, z.height);
+}
+
+//------ REDRAW EVERYTHING (called after every change) ------
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, W, H);
+
+  drawGrid(X_SUBTICK, Y_SUBTICK, '#d3d3d3');
+  drawGrid(X_TICK, Y_TICK, '#808080');
+  drawAxes();
+  drawTicks();
+  drawAxisLabels();
+  drawEquation();
+  drawCurve();
+  drawZoomConnector();
+  drawPoints();
+  drawZoomBox();
+}
+
+//------ SLIDER ---------------------------------------------
+function bindControls() {
+  gSlider.addEventListener('input', () => {
+    gValue = +gSlider.value;
+    gVal.textContent = gValue.toFixed(3);
+    draw();
+  });
+}
+
+bindControls();
+gSlider.value = G_DEFAULT;
+gVal.textContent = G_DEFAULT.toFixed(3);
+window.addEventListener('resize', resizeCanvas);
+if (window.ResizeObserver) {
+  new ResizeObserver(resizeCanvas).observe(canvas);
+}
+resizeCanvas();
+})();
+</script>
+</body>
+</html>
