@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=500">
+<title>Ballistic gravimeter</title>
+<style>
+  /* ================================================================
+     COLORS — change these to restyle the whole simulation
+     ================================================================ */
+  :root {
+    --ink:   #161616;               /* line-art color                 */
+    --beam:  #e0141e;               /* laser red                      */
+    --glow:  #1f6fe0;               /* hover highlight + plot accent  */
+    --rule:  #d6dae0;               /* divider between halves         */
+    --muted: #5b6068;               /* secondary text                 */
+    --bar:   #b7cbe8;               /* histogram bars                 */
+    --band:  rgba(31,111,224,0.18); /* standard-error shading         */
+  }
+
+  html, body { margin:0; padding:0; width:500px; height:400px; overflow:hidden; background:#fff; }
+  body { font-family: Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif; color:var(--ink); }
+
+  /* Two side-by-side halves: apparatus (228 px) | text panel (272 px) */
+  #wrap  { display:flex; width:500px; height:400px; }
+  #app   { flex:0 0 228px; display:block; }
+  #panel { flex:1 1 auto; border-left:1px solid var(--rule); padding:10px 12px;
+           box-sizing:border-box; overflow-y:auto; }
+
+  /* ---------- Apparatus drawing ---------- */
+  .ink   { fill:none; stroke:var(--ink); stroke-width:1.5; stroke-linejoin:round; stroke-linecap:round; }
+  .heavy { stroke-width:2.5; }
+  .solid { fill:#fff; }
+  .beam  { fill:none; stroke:var(--beam); stroke-width:1.3; }
+  .red   { fill:var(--beam); }
+  /* Invisible "hit" shapes: they catch the mouse but draw nothing */
+  .hit-area { fill:transparent; stroke:none; }
+  .hit-line { fill:none; stroke:transparent; stroke-width:9; }
+
+  /* ---------- Hover highlighting (explore mode) ---------- */
+  .part { cursor:pointer; outline:none; transition:opacity .15s; }
+  #app.has-active .part:not(.active) { opacity:.35; }   /* dim everything else   */
+  .part.active      { filter:url(#glow); }              /* blue halo             */
+  .part.active .ink { stroke:var(--glow); }             /* recolor the lines     */
+  @media (prefers-reduced-motion: reduce) { .part { transition:none; } }
+
+  /* ---------- Mode switching ---------- */
+  body.measure .part { pointer-events:none; cursor:default; }
+  body.measure #explorePanel, body.explore #measurePanel { display:none; }
+
+  /* ---------- Explore panel ---------- */
+  #explorePanel { display:flex; flex-direction:column; height:100%; }
+  #info { flex:1 1 auto; overflow-y:auto; }            /* long text scrolls; button stays put */
+  .explore-actions { display:flex; justify-content:flex-end; padding-top:8px; }
+  #infoTitle { font-size:17px; font-weight:700; line-height:1.25; margin:2px 0 8px; }
+  #infoText  { font-size:13.5px; line-height:1.55; }
+  #infoText p { margin:0 0 .7em; }
+
+  /* ---------- Measure panel ---------- */
+  .controls { display:flex; gap:6px; align-items:center; }
+  button { font:inherit; font-size:12.5px; padding:3px 9px; border:1px solid var(--ink);
+           background:#fff; color:var(--ink); border-radius:3px; cursor:pointer; }
+  button:focus-visible { outline:2px solid var(--glow); outline-offset:1px; }
+  #run, #exampleBtn { background:var(--ink); color:#fff; min-width:84px; }
+  button:disabled { opacity:.45; cursor:default; }
+  .speed { display:flex; margin-left:auto; }
+  .speed button { border-radius:0; padding:3px 6px; margin-left:-1px; }
+  .speed button:first-child { border-radius:3px 0 0 3px; }
+  .speed button:last-child  { border-radius:0 3px 3px 0; }
+  .speed button[aria-pressed="true"] { background:#dbe7fa; }
+
+  table.readout { margin-top:7px; border-collapse:collapse; width:100%; font-size:12.5px;
+                  font-variant-numeric:lining-nums tabular-nums; }
+  .readout td { padding:1px 0; height:16px; }
+  .readout td:first-child { color:var(--muted); width:42%; }
+  .bar-over { text-decoration:overline; }
+
+  figure { margin:6px 0 0; }
+  figcaption { font-size:11.5px; color:var(--muted); margin-bottom:1px; }
+  figure svg { display:block; width:100%; height:auto; }
+  .chart text  { font-size:9.5px; fill:var(--muted); font-variant-numeric:lining-nums tabular-nums; }
+  .chart .axis { stroke:#8a8f96; stroke-width:1; }
+  .chart .grid { stroke:#e6e9ed; stroke-width:1; }
+  .chart .bar  { fill:var(--bar); }
+  .chart .meanline { stroke:var(--glow); stroke-width:1.5; fill:none; }
+  .chart .meandot  { fill:var(--glow); }
+  .chart .band { fill:var(--band); }
+  .chart .empty { font-size:11px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+
+<!-- =====================================================================
+     APPARATUS DRAWING (SVG). Coordinates: x 0–228 left→right, y 0–400 top→bottom.
+     Each <g class="part" data-part="..."> is one hoverable component.
+     Drawing order matters: later groups sit on top and win the mouse.
+     ===================================================================== -->
+<svg id="app" viewBox="0 0 228 400" width="228" height="400" role="img" aria-label="Ballistic gravimeter">
+  <defs>
+    <!-- Glow: fatten the shape's outline, blur it, color it blue, place it behind the original -->
+    <filter id="glow" filterUnits="userSpaceOnUse" x="-300" y="-300" width="900" height="1000"
+            color-interpolation-filters="sRGB">
+      <feMorphology in="SourceAlpha" operator="dilate" radius="1.2" result="fat"/>
+      <feGaussianBlur in="fat" stdDeviation="2.6" result="blur"/>
+      <feFlood flood-color="#3b8cff" flood-opacity="0.85"/>
+      <feComposite in2="blur" operator="in" result="halo"/>
+      <feMerge><feMergeNode in="halo"/><feMergeNode in="halo"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Vacuum chamber (walls + optical window below it) -->
+  <g class="part" data-part="chamber">
+    <rect class="ink heavy" x="70" y="22" width="80" height="214"/>
+    <rect class="ink" x="94" y="236" width="32" height="7"/>
+    <rect class="hit-line" x="70" y="22" width="80" height="214"/>
+    <rect class="hit-area" x="94" y="236" width="32" height="7"/>
+  </g>
+
+  <!-- Interferometer housing -->
+  <g class="part" data-part="interferometer">
+    <rect class="ink heavy" x="70" y="247" width="80" height="148"/>
+    <rect class="hit-line" x="70" y="247" width="80" height="148"/>
+  </g>
+
+  <!-- Laser beam path (top ends of the vertical beams follow the falling body) -->
+  <g class="part" data-part="beam">
+    <line id="beamDown" class="beam" x1="103" y1="41" x2="103" y2="362"/>
+    <line id="beamUp"   class="beam" x1="117" y1="41" x2="117" y2="362"/>
+    <line class="beam" x1="56" y1="268" x2="164" y2="268"/>
+    <path id="beamArrows" class="red" d=""/>
+    <line id="beamDownHit" class="hit-line" x1="103" y1="41" x2="103" y2="362"/>
+    <line id="beamUpHit"   class="hit-line" x1="117" y1="41" x2="117" y2="362"/>
+    <line class="hit-line" x1="56" y1="268" x2="164" y2="268"/>
+  </g>
+
+  <!-- Lifting mechanism: guide rail, end blocks, moving platform -->
+  <g class="part" data-part="lift">
+    <line class="ink" x1="77" y1="40" x2="77" y2="210"/>
+    <line class="ink" x1="81" y1="40" x2="81" y2="210"/>
+    <rect class="ink solid" x="75" y="35"  width="8" height="10"/>
+    <rect class="ink solid" x="75" y="203" width="8" height="12"/>
+    <rect id="platform" class="ink" x="74" y="105" width="72" height="5"/>
+    <rect class="hit-area" x="72" y="35" width="13" height="180"/>
+    <rect id="platformHit" class="hit-area" x="74" y="103" width="72" height="9"/>
+  </g>
+
+  <!-- Capture device: cup on top of a vacuum bellows -->
+  <g class="part" data-part="capture">
+    <g id="captureTop"><polygon class="ink" points="90,199 130,199 124,208 96,208"/></g>
+    <path id="bellowsL" class="ink" d=""/>
+    <path id="bellowsR" class="ink" d=""/>
+    <rect class="ink" x="92" y="228" width="36" height="5"/>
+    <rect class="hit-area" x="88" y="197" width="44" height="37"/>
+  </g>
+
+  <!-- Stepper motor with shaft to the lifting rail -->
+  <g class="part" data-part="motor">
+    <line class="ink" x1="56" y1="209" x2="75" y2="209" style="stroke-width:4"/>
+    <rect class="ink heavy solid" x="6" y="196" width="50" height="26"/>
+    <circle class="ink" cx="31" cy="209" r="7"/>
+    <path id="rotor" class="ink" d="M31 202v14M24 209h14"/>
+    <rect class="hit-area" x="6" y="196" width="72" height="26"/>
+  </g>
+
+  <!-- Ion pump with connecting pipe -->
+  <g class="part" data-part="pump">
+    <path class="ink" d="M150 203H164M150 215H164"/>
+    <rect class="ink heavy solid" x="164" y="196" width="50" height="26"/>
+    <path class="ink" d="M176 202v14M185 202v14M194 202v14M203 202v14"/>
+    <rect class="hit-area" x="150" y="196" width="64" height="26"/>
+  </g>
+
+  <!-- Laser -->
+  <g class="part" data-part="laser">
+    <rect class="ink heavy solid" x="6" y="257" width="50" height="22"/>
+    <rect class="ink" x="12" y="263" width="34" height="10" rx="5"/>
+    <rect class="red" x="51" y="265.5" width="4" height="5"/>
+  </g>
+
+  <!-- Photodetector (red sensor dot flickers with the interference fringes) -->
+  <g class="part" data-part="photodetector">
+    <rect class="ink heavy solid" x="164" y="257" width="56" height="22"/>
+    <circle id="pdDot" class="red" cx="174" cy="268" r="4" style="opacity:.6"/>
+    <circle class="ink" cx="174" cy="268" r="4"/>
+    <path class="ink" d="M183 268h4l2-4 3 8 3-8 3 8 3-8 2 4h4"/>
+  </g>
+
+  <!-- Holding electromagnet -->
+  <g class="part" data-part="magnet">
+    <rect id="magnetCore" class="ink heavy solid" x="97" y="4" width="26" height="18"/>
+    <path class="ink" d="M101 9h18M101 13h18M101 17h18"/>
+  </g>
+
+  <!-- Beam splitter (solid = splitting surface, dashed = compensator) -->
+  <g class="part" data-part="splitter">
+    <line class="ink heavy" x1="101" y1="281" x2="133" y2="255"/>
+    <line class="ink" x1="104" y1="285" x2="136" y2="259" stroke-dasharray="3 2"/>
+    <line class="hit-line" x1="101" y1="283" x2="135" y2="257"/>
+  </g>
+
+  <!-- Reference retroreflector (fixed corner cube, pointing down) -->
+  <g class="part" data-part="reference">
+    <polygon class="ink heavy solid" points="96,362 124,362 110,378"/>
+    <line class="ink" x1="99.5" y1="365.5" x2="120.5" y2="365.5"/>
+  </g>
+
+  <!-- Freely falling body (corner cube, pointing up). The inner <g> is what moves. -->
+  <g class="part" data-part="body">
+    <g id="bodyMove" transform="translate(110 41)">
+      <polygon class="ink heavy solid" points="-14,0 14,0 0,-15"/>
+      <line class="ink" x1="-10.5" y1="-3.5" x2="10.5" y2="-3.5"/>
+    </g>
+  </g>
+</svg>
+
+<!-- =====================================================================
+     RIGHT-HAND PANEL
+     ===================================================================== -->
+<div id="panel">
+
+  <section id="explorePanel">
+    <div id="info" aria-live="polite">
+      <h2 id="infoTitle"></h2>
+      <div id="infoText"></div>
+    </div>
+    <div class="explore-actions">
+      <button id="exampleBtn">Example Drop</button>
+    </div>
+  </section>
+
+  <section id="measurePanel">
+    <div class="controls">
+      <button id="run">Start drops</button>
+      <button id="reset">Reset</button>
+      <div class="speed" role="group" aria-label="Simulation speed">
+        <button data-speed="1"  aria-pressed="true">1×</button>
+        <button data-speed="10" aria-pressed="false">10×</button>
+        <button data-speed="50" aria-pressed="false">50×</button>
+      </div>
+    </div>
+
+    <table class="readout">
+      <tr><td>Drops, <i>N</i></td>                                <td id="rN">0</td></tr>
+      <tr><td>Fall time</td>                                      <td id="rT">—</td></tr>
+      <tr><td>This drop, <i>g</i></td>                            <td id="rG">—</td></tr>
+      <tr><td>Mean, <i class="bar-over">g</i></td>                <td id="rMean">—</td></tr>
+      <tr><td>Std. deviation, <i>s</i></td>                       <td id="rSD">—</td></tr>
+      <tr><td>Std. error, <i>s</i>/√<i>N</i></td>                 <td id="rSE">—</td></tr>
+    </table>
+
+    <figure>
+      <figcaption>Distribution of drop results</figcaption>
+      <svg id="hist" class="chart" viewBox="0 0 248 96"></svg>
+    </figure>
+    <figure>
+      <figcaption>Running mean ± standard error (same units)</figcaption>
+      <svg id="trend" class="chart" viewBox="0 0 248 88"></svg>
+    </figure>
+  </section>
+</div>
+</div>
+
+<script>
+/* =======================================================================
+   1. TEXT FOR EXPLORE MODE — paste your real text here.
+      "title" appears as a heading (set it to "" to hide the heading).
+      "text" is HTML, so you can use <p>, <b>, <i>, <sub>, <sup>.
+   ======================================================================= */
+const PART_INFO = {
+  _default: {
+    title: "Ballistic gravimeter",
+    text:  "<p>Point to any part of the instrument, or tap it on a touchscreen, to see what it does.</p>"
+  },
+  magnet: { title: "Holding electromagnet",
+    text: "<p>Device that secures the freely falling body until triggered for release.</p>" },
+  chamber: { title: "Vacuum chamber",
+    text: "<p>Sealed vessel with the air pumped out.</p>" },
+  body: { title: "Freely falling body",
+    text: "<p>Object which has its fall measured. The body is shaped like a corner to reflect laser light. </p>" },
+  lift: { title: "Lifting mechanism",
+    text: "<p>After each fall, this device brings the freely falling body back to the top of the chamber.</p>" },
+  capture: { title: "Capture device",
+    text: "<p>The impact of the fall is absorbed by this device, gently catching the freely falling body.</p>" },
+  motor: { title: "Stepper motor",
+    text: "<p>An electric motor capable of controlling the lifting mechanism in precise increments.</p>" },
+  pump: { title: "Ion pump",
+    text: "<p>This device maintains the vacuum by pulling any remaining particles from the chamber.</p>" },
+  laser: { title: "Laser",
+    text: "<p>A source of well-behaved and regulated light.</p>" },
+  splitter: { title: "Beam splitter",
+    text: "<p>Allows some light to travel directly through, while some light is redirected upwards towards the falling body.</p>" },
+  photodetector: { title: "Photodetector",
+    text: "<p>This device receives the laser light that travels both paths.</p>" },
+  interferometer: { title: "Interferometer",
+    text: "<p>The lower half of the gravimeter is devoted to controlling the laser system.</p>" },
+  reference: { title: "Reference retroreflector",
+    text: "<p>This object bounces back laser light. As the freely falling body gets closer to the reference retroreflector, the laser beam path is shortened.</p>" },
+  beam: { title: "Laser beam path",
+    text: "<p>Some laser light is bounced from the falling body and the retroreflector before reaching the photodetector, while some laser light travels a direct path.</p>" }
+};
+
+
+/* =======================================================================
+   2. PHYSICS / STATISTICS SETTINGS (measure mode)
+   ======================================================================= */
+// Measurement sites. The key (measure1, measure2, ...) is what goes in the URL.
+// "g" is the "true" local g that the simulated instrument measures (m/s²).
+// "name" is for your reference only; it is not shown to students.
+const LOCATIONS = {
+  measure1: { name: "Southern California (34° N, ~90 m)", g: 9.79601234 },
+  measure2: { name: "Singapore (1.3° N, ~15 m)",         g: 9.78030521 },
+  measure3: { name: "Anchorage, Alaska (61.2° N, ~30 m)", g: 9.82003080 }
+};
+const SIGMA     = 0.5e-6;     // random scatter of a single drop, as a standard deviation (m/s²)
+const DROP_DIST = 0.200;      // fall distance of the body (m), used to compute fall time
+const UNIT      = 1e-6;       // plots are drawn in units of 10⁻⁶ m/s²
+
+/* =======================================================================
+   3. MODE: read ?mode=explore or ?mode=measure1 / measure2 / measure3
+      ("measure" by itself means measure1)
+   ======================================================================= */
+const params    = new URLSearchParams(window.location.search);
+const requested = (params.get("mode") || window.location.hash.slice(1) || "").toLowerCase();
+const MODE      = requested.startsWith("measure") ? "measure" : "explore";
+document.body.classList.add(MODE);
+
+const LOCATION = LOCATIONS[requested] || LOCATIONS.measure1;
+const G_TRUE   = LOCATION.g;
+// Reference value for the plot axes: G_TRUE rounded down to 0.001 m/s² (e.g. 9.796)
+const REF      = Math.floor(G_TRUE * 1000) / 1000;
+
+/* =======================================================================
+   4. DRAWING HELPERS shared by both modes
+   ======================================================================= */
+const $ = id => document.getElementById(id);
+const svgApp = $("app");
+
+const Y_HELD = 41;   // y of the body's base when held by the magnet
+const Y_PARK = 193;  // y of the platform top when parked on the capture device
+
+// One small triangular arrowhead as an SVG path string
+function arrow(x, y, dir) {
+  if (dir === "up")   return `M${x} ${y-3.5}L${x-3} ${y+2.5}L${x+3} ${y+2.5}Z`;
+  if (dir === "down") return `M${x} ${y+3.5}L${x-3} ${y-2.5}L${x+3} ${y-2.5}Z`;
+  return `M${x+3.5} ${y}L${x-2.5} ${y-3}L${x-2.5} ${y+3}Z`; // right
+}
+
+// Wavy bellows side from y = top to y = bottom (3 bulges)
+function bellows(x, bulge, top, bottom) {
+  const h = (bottom - top) / 3;
+  let d = `M${x} ${top}`;
+  for (let i = 0; i < 3; i++) {
+    const y0 = top + i * h;
+    d += `Q${x + bulge} ${y0 + h / 2} ${x} ${y0 + h}`;
+  }
+  return d;
+}
+
+// Put every moving piece where a "scene" object says it should be
+function setScene(s) {
+  $("bodyMove").setAttribute("transform", `translate(110 ${s.yb})`);
+  for (const id of ["beamDown", "beamUp", "beamDownHit", "beamUpHit"]) $(id).setAttribute("y1", s.yb);
+
+  const span = 236 - s.yb; // beam length inside the chamber
+  $("beamArrows").setAttribute("d",
+    arrow(103, s.yb + 0.4 * span, "down") + arrow(117, s.yb + 0.7 * span, "up") +
+    arrow(103, 322, "down") + arrow(117, 318, "up") +
+    arrow(64, 268, "right") + arrow(157, 268, "right"));
+
+  $("platform").setAttribute("y", s.platY);
+  $("platformHit").setAttribute("y", s.platY - 2);
+
+  $("captureTop").setAttribute("transform", `translate(0 ${s.c})`);
+  $("bellowsL").setAttribute("d", bellows(96, -5, 208 + s.c, 228));
+  $("bellowsR").setAttribute("d", bellows(124, 5, 208 + s.c, 228));
+
+  $("magnetCore").style.fill = s.magnetOn ? "#cfe0fa" : "";
+  $("pdDot").style.opacity = s.pd;
+  $("rotor").setAttribute("transform", `rotate(${s.rotor} 31 209)`);
+}
+
+const DROP_PX     = Y_PARK - Y_HELD; // on-screen fall distance (px)
+const Y_PLAT_HOME = 105;             // platform height in the still picture of explore mode
+const smooth = f => f * f * (3 - 2 * f); // ease-in-out curve, 0→1
+
+// Given a phase name and progress f (0→1), return where everything should be.
+// Used by both explore mode (Example Drop) and measure mode.
+function sceneFor(name, f, magnetOn) {
+  let yb = Y_HELD, platY = Y_PARK, c = 0;
+  if (name === "park")        { platY = Y_PLAT_HOME + (Y_PARK - Y_PLAT_HOME) * smooth(f); }
+  else if (name === "fall")   { yb = Y_HELD + DROP_PX * f * f; }          // y ∝ t²
+  else if (name === "impact") { c = 3 * Math.sin(Math.PI * f); yb = Y_PARK + c; platY = Y_PARK + c; }
+  else if (name === "settle") { yb = Y_PARK; }
+  else if (name === "lift")   { platY = Y_PARK - DROP_PX * smooth(f); yb = platY; }
+  else if (name === "grab")   { platY = Y_HELD; }
+  else if (name === "lower")  { platY = Y_HELD + DROP_PX * smooth(f); }
+  else if (name === "return") { platY = Y_HELD + (Y_PLAT_HOME - Y_HELD) * smooth(f); }
+  // Fringe flicker: brightness cycles as the body's distance changes
+  const pd = 0.15 + 0.85 * (0.5 + 0.5 * Math.cos(2 * Math.PI * (yb - Y_HELD) / 4));
+  return { name, f, yb, platY, c, magnetOn, pd, rotor: (Y_PARK - platY) * 5 };
+}
+
+/* =======================================================================
+   5. EXPLORE MODE: hover / tap / keyboard highlighting
+   ======================================================================= */
+function setupExplore() {
+  setScene(sceneFor("return", 1, false)); // the still picture: body at top, platform at home
+
+  const titleEl = $("infoTitle"), textEl = $("infoText");
+  let activePart = null;
+
+  function showInfo(key) {
+    const info = PART_INFO[key] || PART_INFO._default;
+    titleEl.textContent = info.title;
+    titleEl.hidden = !info.title;
+    textEl.innerHTML = info.text;
+  }
+  function activate(p) {
+    if (activePart === p) return;
+    if (activePart) activePart.classList.remove("active");
+    activePart = p;
+    p.classList.add("active");
+    svgApp.classList.add("has-active");
+    showInfo(p.dataset.part);
+  }
+  function clearActive() {
+    if (activePart) activePart.classList.remove("active");
+    activePart = null;
+    svgApp.classList.remove("has-active");
+    showInfo("_default");
+  }
+
+  document.querySelectorAll("#app .part").forEach(p => {
+    const info = PART_INFO[p.dataset.part];
+    p.setAttribute("tabindex", "0");                       // reachable with Tab key
+    p.setAttribute("role", "button");
+    if (info) p.setAttribute("aria-label", info.title);
+    p.addEventListener("pointerenter", () => activate(p));
+    p.addEventListener("pointerleave", e => {               // on touch, keep it lit after the finger lifts
+      if (e.pointerType !== "touch" && activePart === p) clearActive();
+    });
+    p.addEventListener("focus", () => activate(p));
+    p.addEventListener("blur",  () => { if (activePart === p) clearActive(); });
+  });
+
+  // Tapping empty space clears the selection (useful on touchscreens)
+  svgApp.addEventListener("pointerdown", e => { if (!e.target.closest(".part")) clearActive(); });
+
+  showInfo("_default");
+
+  // ---- Example Drop: play one full cycle, record nothing ----
+  // The platform first moves out of the way, the body drops and is lifted back,
+  // and the platform returns home so the picture ends where it started.
+  const EXAMPLE_PHASES = [
+    { name: "park",   dur: 0.8  }, // platform moves down out of the body's path
+    { name: "hold",   dur: 0.5  },
+    { name: "fall",   dur: 1.2  },
+    { name: "impact", dur: 0.35 },
+    { name: "settle", dur: 0.25 },
+    { name: "lift",   dur: 1.1  },
+    { name: "grab",   dur: 0.3  },
+    { name: "return", dur: 0.8  }  // platform goes back to its home height
+  ];
+  const btn = $("exampleBtn");
+  let phaseIndex = 0, phaseTime = 0, magnetOn = false, lastStamp = null;
+
+  function step(stamp) {
+    if (lastStamp === null) lastStamp = stamp;
+    const dt = Math.min((stamp - lastStamp) / 1000, 0.1);
+    lastStamp = stamp;
+    phaseTime += dt;
+
+    // Move on to the next phase(s) when the current one runs out
+    while (phaseTime >= EXAMPLE_PHASES[phaseIndex].dur) {
+      phaseTime -= EXAMPLE_PHASES[phaseIndex].dur;
+      phaseIndex += 1;
+      if (phaseIndex === EXAMPLE_PHASES.length) {          // finished
+        setScene(sceneFor("return", 1, false));
+        btn.disabled = false;
+        return;                                            // stop the loop
+      }
+      const name = EXAMPLE_PHASES[phaseIndex].name;
+      if (name === "fall") magnetOn = false;
+      if (name === "grab") magnetOn = true;
+    }
+
+    const ph = EXAMPLE_PHASES[phaseIndex];
+    setScene(sceneFor(ph.name, phaseTime / ph.dur, magnetOn));
+    requestAnimationFrame(step);
+  }
+
+  btn.addEventListener("click", () => {
+    btn.disabled = true;              // ignore extra clicks until the drop finishes
+    phaseIndex = 0; phaseTime = 0; magnetOn = true; lastStamp = null;
+    requestAnimationFrame(step);
+  });
+}
+
+/* =======================================================================
+   6. MEASURE MODE: repeated drops + statistics
+   ======================================================================= */
+function setupMeasure() {
+  // ---- The drop cycle, as a list of phases. dur = seconds at 1× speed ----
+  const PHASES = [
+    { name: "hold",   dur: 0.6  }, // magnet holds body at top
+    { name: "fall",   dur: 1.2  }, // free fall (slow motion: the real fall is ~0.2 s)
+    { name: "impact", dur: 0.35 }, // body lands; bellows compress and recover
+    { name: "settle", dur: 0.25 },
+    { name: "lift",   dur: 1.1  }, // platform carries body back up
+    { name: "grab",   dur: 0.3  }, // magnet switches on
+    { name: "lower",  dur: 0.9  }  // platform returns to its parking spot
+  ];
+
+  let phaseIndex = 0, phaseTime = 0;
+  let running = false, speed = 1, magnetOn = true;
+  let currentG = null, currentT = null;     // values for the drop in progress
+
+  // ---- Running statistics (Welford's method) ----
+  let n = 0, mean = 0, M2 = 0, lastG = null, lastT = null;
+  const means = [], ses = [];
+
+  // ---- Plot range: centered on G_TRUE, ±4σ wide, in units of UNIT ----
+  const center = Math.round((G_TRUE - REF) / UNIT);
+  const half   = Math.max(1, Math.ceil(4 * SIGMA / UNIT));
+  const lo = center - half, hi = center + half;
+  const tickStep = half <= 3 ? 1 : (half <= 8 ? 2 : 5);
+  const NB = 20;                              // number of histogram bins
+  const counts = new Array(NB).fill(0);
+
+  // ---- Helpers ----
+  const clamp  = (v, a, b) => Math.min(b, Math.max(a, v));
+  function randn() {                          // standard normal random number (Box–Muller)
+    let u = 0, v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  }
+  function group(s) {                         // "9.7960123" → "9.796 012 3" (thin spaces)
+    const [i, d] = s.split(".");
+    return i + "." + [d.slice(0, 3), d.slice(3, 6), d.slice(6)].filter(Boolean).join("\u2009");
+  }
+  const fmtG   = v => group(v.toFixed(7));
+  const fmtRef = group(REF.toFixed(6));
+  const sdNow  = () => (n > 1 ? Math.sqrt(M2 / (n - 1)) : NaN);
+
+  // ---- What happens when a phase begins ----
+  function onEnter(name) {
+    if (name === "fall") {
+      currentG = G_TRUE + SIGMA * randn();
+      currentT = Math.sqrt(2 * DROP_DIST / currentG);
+      magnetOn = false;
+    } else if (name === "impact") {
+      record();
+    } else if (name === "grab") {
+      magnetOn = true;
+    }
+  }
+
+  function record() {
+    const x = (currentG - REF) / UNIT;      // this drop, in plot units
+    n += 1;
+    const delta = x - mean;                 // Welford update of mean and spread
+    mean += delta / n;
+    M2   += delta * (x - mean);
+    means.push(mean);
+    ses.push(n > 1 ? sdNow() / Math.sqrt(n) : NaN);
+    const bin = clamp(Math.floor((x - lo) / (hi - lo) * NB), 0, NB - 1);
+    counts[bin] += 1;
+    lastG = currentG; lastT = currentT;
+    renderStats();
+  }
+
+  // ---- Advance the clock, stepping through as many phases as needed ----
+  function advance(t) {
+    while (t > 0) {
+      const remaining = PHASES[phaseIndex].dur - phaseTime;
+      if (t < remaining) { phaseTime += t; t = 0; }
+      else {
+        t -= remaining;
+        phaseTime = 0;
+        phaseIndex = (phaseIndex + 1) % PHASES.length;
+        onEnter(PHASES[phaseIndex].name);
+      }
+    }
+  }
+
+  // ---- Convert the current phase into positions on screen ----
+  function currentScene() {
+    const ph = PHASES[phaseIndex];
+    return sceneFor(ph.name, phaseTime / ph.dur, magnetOn); // shared with explore mode
+  }
+
+  // ---- Readouts and charts ----
+  function renderStats() {
+    $("rN").textContent    = n;
+    $("rG").textContent    = lastG === null ? "—" : fmtG(lastG) + " m/s²";
+    $("rMean").textContent = n ? fmtG(REF + mean * UNIT) + " m/s²" : "—";
+    $("rSD").textContent   = n > 1 ? sdNow().toFixed(2) + " × 10⁻⁶ m/s²" : "—";
+    $("rSE").textContent   = n > 1 ? (sdNow() / Math.sqrt(n)).toFixed(3) + " × 10⁻⁶ m/s²" : "—";
+    drawHist();
+    drawTrend();
+  }
+
+  function drawHist() {
+    const x0 = 8, x1 = 240, yT = 6, yB = 62;
+    const xOf = v => x0 + (clamp(v, lo, hi) - lo) / (hi - lo) * (x1 - x0);
+    const bw = (x1 - x0) / NB, maxC = Math.max(1, ...counts);
+    let s = "";
+    if (n > 1) {
+      const se = sdNow() / Math.sqrt(n);
+      s += `<rect class="band" x="${xOf(mean - se)}" y="${yT}" width="${Math.max(1, xOf(mean + se) - xOf(mean - se))}" height="${yB - yT}"/>`;
+    }
+    counts.forEach((c, i) => {
+      if (!c) return;
+      const h = c / maxC * (yB - yT);
+      s += `<rect class="bar" x="${(x0 + i * bw + 0.5).toFixed(2)}" y="${(yB - h).toFixed(2)}" width="${(bw - 1).toFixed(2)}" height="${h.toFixed(2)}"/>`;
+    });
+    if (n > 0) s += `<line class="meanline" x1="${xOf(mean)}" y1="${yT}" x2="${xOf(mean)}" y2="${yB}"/>`;
+    s += `<line class="axis" x1="${x0}" y1="${yB}" x2="${x1}" y2="${yB}"/>`;
+    for (let k = lo; k <= hi + 1e-9; k += tickStep) {
+      const x = xOf(k);
+      s += `<line class="axis" x1="${x}" y1="${yB}" x2="${x}" y2="${yB + 3}"/>`;
+      s += `<text x="${x}" y="${yB + 13}" text-anchor="middle">${k}</text>`;
+    }
+    s += `<text x="124" y="91" text-anchor="middle">g − ${fmtRef} m/s², in units of 10⁻⁶ m/s²</text>`;
+    if (n === 0) s += `<text class="empty" x="124" y="38" text-anchor="middle">Press Start drops to begin.</text>`;
+    $("hist").innerHTML = s;
+  }
+
+  function drawTrend() {
+    const x0 = 26, x1 = 242, yT = 6, yB = 60;
+    const yOf = v => yB - (clamp(v, lo, hi) - lo) / (hi - lo) * (yB - yT);
+    let s = "";
+    for (const k of [lo, center, hi]) {
+      s += `<line class="grid" x1="${x0}" y1="${yOf(k)}" x2="${x1}" y2="${yOf(k)}"/>`;
+      s += `<text x="${x0 - 4}" y="${yOf(k) + 3}" text-anchor="end">${k}</text>`;
+    }
+    s += `<line class="axis" x1="${x0}" y1="${yT}" x2="${x0}" y2="${yB}"/>`;
+    s += `<line class="axis" x1="${x0}" y1="${yB}" x2="${x1}" y2="${yB}"/>`;
+    const Nmax = Math.max(n, 10);
+    const xOf = i => x0 + (i - 1) / (Nmax - 1) * (x1 - x0);
+    if (n > 0) {
+      const stride = Math.max(1, Math.ceil(n / 200));     // thin out points for long runs
+      const idx = [];
+      for (let i = 1; i <= n; i += stride) idx.push(i);
+      if (idx[idx.length - 1] !== n) idx.push(n);
+      const bandIdx = idx.filter(i => i >= 2);
+      if (bandIdx.length >= 2) {
+        const upper = bandIdx.map(i => `${xOf(i).toFixed(1)},${yOf(means[i - 1] + ses[i - 1]).toFixed(1)}`);
+        const lower = bandIdx.slice().reverse().map(i => `${xOf(i).toFixed(1)},${yOf(means[i - 1] - ses[i - 1]).toFixed(1)}`);
+        s += `<polygon class="band" points="${upper.concat(lower).join(" ")}"/>`;
+      }
+      s += `<polyline class="meanline" points="${idx.map(i => `${xOf(i).toFixed(1)},${yOf(means[i - 1]).toFixed(1)}`).join(" ")}"/>`;
+      s += `<circle class="meandot" cx="${xOf(n)}" cy="${yOf(mean)}" r="2"/>`;
+    }
+    s += `<text x="${x0}" y="72">1</text>`;
+    s += `<text x="${x1}" y="72" text-anchor="end">${Nmax}</text>`;
+    s += `<text x="${(x0 + x1) / 2}" y="84" text-anchor="middle">drop number</text>`;
+    $("trend").innerHTML = s;
+  }
+
+  // ---- Buttons ----
+  const runBtn = $("run");
+  function updateRunLabel() {
+    const fresh = n === 0 && phaseIndex === 0 && phaseTime === 0;
+    runBtn.textContent = running ? "Pause" : (fresh ? "Start drops" : "Resume");
+  }
+  runBtn.addEventListener("click", () => { running = !running; updateRunLabel(); });
+
+  $("reset").addEventListener("click", () => {
+    running = false; phaseIndex = 0; phaseTime = 0; magnetOn = true;
+    n = 0; mean = 0; M2 = 0; lastG = null; lastT = null; currentT = null;
+    means.length = 0; ses.length = 0; counts.fill(0);
+    renderStats(); updateRunLabel();
+  });
+
+  document.querySelectorAll(".speed button").forEach(b => {
+    b.addEventListener("click", () => {
+      speed = Number(b.dataset.speed);
+      document.querySelectorAll(".speed button").forEach(o => o.setAttribute("aria-pressed", String(o === b)));
+    });
+  });
+
+  // ---- Animation loop: runs about 60 times per second ----
+  let lastStamp = null;
+  function frame(stamp) {
+    if (lastStamp === null) lastStamp = stamp;
+    const dt = Math.min((stamp - lastStamp) / 1000, 0.1); // seconds since last frame (capped)
+    lastStamp = stamp;
+    if (running) advance(dt * speed);
+
+    const sc = currentScene();
+    setScene(sc);
+    if (sc.name === "fall" && currentT !== null) $("rT").textContent = (sc.f * currentT).toFixed(4) + " s";
+    else $("rT").textContent = lastT === null ? "—" : lastT.toFixed(4) + " s";
+
+    requestAnimationFrame(frame);
+  }
+
+  renderStats();
+  updateRunLabel();
+  requestAnimationFrame(frame);
+}
+
+/* =======================================================================
+   7. START
+   ======================================================================= */
+if (MODE === "measure") setupMeasure();
+else setupExplore();
+</script>
+</body>
+</html>
