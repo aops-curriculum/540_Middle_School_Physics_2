@@ -267,6 +267,16 @@ function drawBulb(x, y, power, sc, showGlow) {
   ctx.fillStyle = look ? 'rgba(255,240,160,' + (0.35 + 0.6 * look.t).toFixed(3) + ')' : 'rgba(225,240,250,0.55)';
   ctx.fill();
   ctx.strokeStyle = '#8aa'; ctx.lineWidth = 1.5; ctx.stroke();
+  if (look && look.t > 0.5 && showGlow) {
+    // a very bright bulb washes out to white in the middle
+    const k = Math.min(1, (look.t - 0.5) / 0.4);
+    const g2 = ctx.createRadialGradient(0, gy, 2, 0, gy, 34);
+    g2.addColorStop(0, 'rgba(255,255,255,' + (0.95 * k).toFixed(3) + ')');
+    g2.addColorStop(0.6, 'rgba(255,255,235,' + (0.6 * k).toFixed(3) + ')');
+    g2.addColorStop(1, 'rgba(255,255,220,0)');
+    ctx.fillStyle = g2;
+    ctx.beginPath(); ctx.arc(0, gy, 34, 0, Math.PI * 2); ctx.fill();
+  }
   // filament
   ctx.strokeStyle = look ? look.fil : '#555';
   ctx.lineWidth = look ? 2.5 : 1.5;
