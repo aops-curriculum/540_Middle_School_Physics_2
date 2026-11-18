@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="eigennode-aspect" content="3/2">
+<title>The Mystery Box</title>
+<!-- Original AoPS interactive. Middle School Physics 2, MS211 (simple circuits): a box with two leads; hook a battery, a bulb and wires to it and work out what's inside. -->
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; }
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f0f0f0;
+  font-family: Arial, sans-serif;
+  user-select: none;
+}
+canvas { display: block; aspect-ratio: 3/2; height: min(100%, 66.667vw); width: auto; touch-action: none; cursor: default; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// ── Parameters ───────────────────────────────────────────────────────────────
+const Q    = new URLSearchParams(location.search);
+const num  = (k, d) => Q.has(k) && isFinite(+Q.get(k)) ? +Q.get(k) : d;
+const bool = (k, d) => Q.has(k) ? Q.get(k) !== '0' : d;
+const str  = (k, d) => Q.has(k) ? Q.get(k) : d;
+
+const BOX_KINDS = ['battery', 'wire', 'empty', 'bulb', 'battery_bulb'];
+let BOX = str('box', 'battery');
+if (BOX_KINDS.indexOf(BOX) < 0) BOX = 'battery';
+const REVEAL    = bool('reveal', false);
+const N_BATT    = Math.max(0, Math.min(3, Math.round(num('batteries', 1))));
+const N_BULB    = Math.max(0, Math.min(3, Math.round(num('bulbs', 1))));
+
+// ── Circuit model ────────────────────────────────────────────────────────────
+// Ideal 1.5 V cells with a little internal resistance, ohmic bulbs, and wires
+// with a tiny resistance (so a short circuit gives a large but finite current).
+const EMF = 1.5, R_INT = 0.2, R_BULB = 5, R_WIRE = 0.02;
+const P_NOM = EMF * EMF / R_BULB;   // bulb power on one battery (ideal)
+const HOT_AMPS = 2.5;               // wires carrying more than this get hot
+
+// ── Canvas ───────────────────────────────────────────────────────────────────
+const DESIGN_W = 900, DESIGN_H = 600;
+const W = DESIGN_W, H = DESIGN_H;
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+function fit() {
+  const dpr = window.devicePixelRatio || 1;
+  const cw = canvas.clientWidth, ch = canvas.clientHeight;
+  if (!cw || !ch) return;
+  canvas.width  = Math.round(cw * dpr);
+  canvas.height = Math.round(ch * dpr);
+  ctx.setTransform(canvas.width / DESIGN_W, 0, 0, canvas.height / DESIGN_H, 0, 0);
+  draw();
+}
+
+// ── Scene ────────────────────────────────────────────────────────────────────
+const BOX_W = 220, BOX_H = 150;
+let parts, wires, wireCount;
+
+function reset() {
+  parts = [{ id: 'box', kind: 'box', x: 450, y: 170 }];
+  for (let i = 0; i < N_BATT; i++) parts.push({ id: 'batt' + i, kind: 'battery', x: 140, y: 390 + i * 70, dir: 1 });
+  for (let i = 0; i < N_BULB; i++) parts.push({ id: 'bulb' + i, kind: 'bulb', x: 680 + i * 90, y: 420 });
+  wires = [];
+  wireCount = 0;
+  solve();
+}
+
+const WIRE_COLORS = ['#e74c3c', '#3498db', '#27ae60', '#8e44ad', '#e67e22', '#34495e'];
+
+function termPos(p, k) {
+  if (p.kind === 'battery') {
+    // k = 0 is the negative end, k = 1 the positive end
+    const s = (k === 1 ? 1 : -1) * p.dir;
+    return { x: p.x + s * 68, y: p.y };
+  }
+  if (p.kind === 'bulb') return { x: p.x + (k === 0 ? -44 : 44), y: p.y + 30 };
+  // box: k = 0 is lead A, k = 1 is lead B
+  return { x: p.x + (k === 0 ? -62 : 62), y: p.y + BOX_H / 2 + 75 };
+}
+
+function allTerminals() {
+  const out = [];
+  for (const p of parts) for (let k = 0; k < 2; k++) {
+    const q = termPos(p, k);
+    out.push({ key: p.id + ':' + k, part: p, k, x: q.x, y: q.y });
+  }
+  return out;
+}
+function partById(id) { return parts.find(p => p.id === id); }
+function termByKey(key) {
+  const [id, k] = key.split(':');
+  const p = partById(id);
+  const q = termPos(p, +k);
+  return { key, part: p, k: +k, x: q.x, y: q.y };
+}
+
+// ── Solver (nodal analysis) ──────────────────────────────────────────────────
+let boxBulbPower = 0;
+
+function solve() {
+  const idx = new Map();
+  let n = 0;
+  const node = k => { if (!idx.has(k)) idx.set(k, n++); return idx.get(k); };
+  const els = [];
+  for (const p of parts) {
+    const a = node(p.id + ':0'), b = node(p.id + ':1');
+    if (p.kind === 'battery') els.push({ t: 'V', a, b, ref: p });
+    else if (p.kind === 'bulb') els.push({ t: 'R', a, b, R: R_BULB, ref: p });
+    else if (p.kind === 'box') {
+      if (BOX === 'battery') els.push({ t: 'V', a, b, ref: null });
+      else if (BOX === 'wire') els.push({ t: 'R', a, b, R: R_WIRE, ref: null });
+      else if (BOX === 'bulb') els.push({ t: 'R', a, b, R: R_BULB, ref: 'boxbulb' });
+      else if (BOX === 'battery_bulb') {
+        const m = node('box:m');
+        els.push({ t: 'V', a, b: m, ref: null });
+        els.push({ t: 'R', a: m, b, R: R_BULB, ref: 'boxbulb' });
+      }
+    }
+  }
+  for (const w of wires) els.push({ t: 'R', a: node(w.a), b: node(w.b), R: R_WIRE, ref: w });
+
+  const G = [], I = new Array(n).fill(0);
+  for (let i = 0; i < n; i++) { G.push(new Array(n).fill(0)); G[i][i] = 1e-9; }
+  for (const e of els) {
+    const g = 1 / (e.t === 'V' ? R_INT : e.R);
+    G[e.a][e.a] += g; G[e.b][e.b] += g; G[e.a][e.b] -= g; G[e.b][e.a] -= g;
+    if (e.t === 'V') { I[e.b] += EMF / R_INT; I[e.a] -= EMF / R_INT; }
+  }
+  const V = gauss(G, I);
+
+  boxBulbPower = 0;
+  for (const p of parts) { p.power = 0; p.amps = 0; }
+  for (const e of els) {
+    if (e.t === 'R') {
+      const amps = (V[e.a] - V[e.b]) / e.R;
+      if (e.ref === 'boxbulb') boxBulbPower = amps * amps * e.R;
+      else if (e.ref && e.ref.kind === 'bulb') e.ref.power = amps * amps * e.R;
+      else if (e.ref && e.ref.a) e.ref.amps = amps;
+    } else if (e.ref) {
+      e.ref.amps = (EMF - (V[e.b] - V[e.a])) / R_INT;
+    }
+  }
+}
+
+function gauss(A, b) {
+  const n = b.length;
+  const M = A.map((row, i) => row.slice().concat([b[i]]));
+  for (let c = 0; c < n; c++) {
+    let piv = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[piv][c])) piv = r;
+    [M[c], M[piv]] = [M[piv], M[c]];
+    const d = M[c][c];
+    if (Math.abs(d) < 1e-15) continue;
+    for (let r = 0; r < n; r++) {
+      if (r === c) continue;
+      const f = M[r][c] / d;
+      if (f) for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  return M.map((row, i) => Math.abs(row[i]) < 1e-15 ? 0 : row[n] / row[i]);
+}
+
+// ── Drawing helpers ──────────────────────────────────────────────────────────
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function wireCurve(p1, p2) {
+  const dx = p2.x - p1.x, dy = p2.y - p1.y;
+  const d = Math.hypot(dx, dy);
+  const sag = 18 + 0.18 * d;
+  return { x0: p1.x, y0: p1.y, cx: (p1.x + p2.x) / 2, cy: (p1.y + p2.y) / 2 + sag, x1: p2.x, y1: p2.y };
+}
+function curvePoint(c, t) {
+  const u = 1 - t;
+  return { x: u * u * c.x0 + 2 * u * t * c.cx + t * t * c.x1, y: u * u * c.y0 + 2 * u * t * c.cy + t * t * c.y1 };
+}
+
+function drawBattery(x, y, dir, sc, hot) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(sc, sc);
+  const s = dir;
+  if (hot) {
+    ctx.save();
+    ctx.shadowColor = 'rgba(255,90,0,0.9)';
+    ctx.shadowBlur = 25;
+    ctx.fillStyle = 'rgba(255,120,0,0.35)';
+    roundRect(-62, -24, 124, 48, 12); ctx.fill();
+    ctx.restore();
+  }
+  // tabs out to the clips
+  ctx.strokeStyle = '#888'; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(-68, 0); ctx.lineTo(68, 0); ctx.stroke();
+  // black body (negative end) and copper cap (positive end), mirrored by dir
+  const xNeg = -55 * s, xMid = 20 * s, xPos = 50 * s;
+  ctx.fillStyle = '#2b2b2b';
+  ctx.fillRect(Math.min(xNeg, xMid), -18, Math.abs(xMid - xNeg), 36);
+  ctx.fillStyle = '#c87533';
+  ctx.fillRect(Math.min(xMid, xPos), -18, Math.abs(xPos - xMid), 36);
+  ctx.fillStyle = '#aaa';
+  ctx.fillRect(Math.min(xPos, xPos + 8 * s), -7, 8, 14);          // + nub
+  ctx.fillRect(Math.min(xNeg, xNeg - 3 * s), -14, 3, 28);         // flat − end
+  ctx.strokeStyle = '#111'; ctx.lineWidth = 1.5;
+  ctx.strokeRect(Math.min(xNeg, xPos), -18, Math.abs(xPos - xNeg), 36);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 15px Arial';
+  ctx.fillText('1.5 V', -12 * s, 1);
+  ctx.font = 'bold 20px Arial';
+  ctx.fillStyle = '#fff';  ctx.fillText('−', -45 * s, 0);
+  ctx.fillStyle = '#3a1d05'; ctx.fillText('+', 35 * s, 1);
+  ctx.restore();
+}
+
+function bulbLook(power) {
+  const ratio = power / P_NOM;
+  if (ratio < 0.02) return null;
+  const t = Math.sqrt(Math.min(ratio, 4) / 4);
+  let fil;
+  if (ratio < 0.4) fil = '#c0392b';
+  else if (ratio < 1.6) fil = '#ffb020';
+  else fil = '#fffbe8';
+  return { t, fil };
+}
+
+function drawBulb(x, y, power, sc, showGlow) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(sc, sc);
+  const look = bulbLook(power);
+  const gy = -26;
+  if (look && showGlow) {
+    const R = 40 + 120 * look.t;
+    const g = ctx.createRadialGradient(0, gy, 4, 0, gy, R);
+    g.addColorStop(0, 'rgba(255,250,200,' + (0.25 + 0.7 * look.t).toFixed(3) + ')');
+    g.addColorStop(0.35, 'rgba(255,220,90,' + (0.12 + 0.45 * look.t).toFixed(3) + ')');
+    g.addColorStop(1, 'rgba(255,200,60,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(0, gy, R, 0, Math.PI * 2); ctx.fill();
+  }
+  // leads from holder out to the screw clips
+  ctx.strokeStyle = '#888'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(-44, 30); ctx.lineTo(44, 30); ctx.stroke();
+  // holder
+  ctx.fillStyle = '#4a4a4a';
+  roundRect(-34, 16, 68, 26, 4); ctx.fill();
+  // screw base
+  ctx.fillStyle = '#b5b5b5';
+  ctx.fillRect(-11, -4, 22, 20);
+  ctx.strokeStyle = '#777'; ctx.lineWidth = 1.5;
+  for (let i = 0; i < 4; i++) { ctx.beginPath(); ctx.moveTo(-11, -1 + i * 5); ctx.lineTo(11, 2 + i * 5); ctx.stroke(); }
+  // glass
+  ctx.beginPath(); ctx.arc(0, gy, 26, 0, Math.PI * 2);
+  ctx.fillStyle = look ? 'rgba(255,240,160,' + (0.35 + 0.6 * look.t).toFixed(3) + ')' : 'rgba(225,240,250,0.55)';
+  ctx.fill();
+  ctx.strokeStyle = '#8aa'; ctx.lineWidth = 1.5; ctx.stroke();
+  // filament
+  ctx.strokeStyle = look ? look.fil : '#555';
+  ctx.lineWidth = look ? 2.5 : 1.5;
+  ctx.beginPath();
+  ctx.moveTo(-6, -4); ctx.lineTo(-6, -22);
+  for (let i = 0; i <= 6; i++) ctx.lineTo(-6 + i * 2, -22 + (i % 2 ? -4 : 0));
+  ctx.lineTo(6, -4);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawBox(p) {
+  const x = p.x, y = p.y, L = x - BOX_W / 2, T = y - BOX_H / 2;
+  const exitA = { x: x - 40, y: T + BOX_H }, exitB = { x: x + 40, y: T + BOX_H };
+  const tA = termPos(p, 0), tB = termPos(p, 1);
+  // leads
+  ctx.lineCap = 'round';
+  for (const [e, t] of [[exitA, tA], [exitB, tB]]) {
+    ctx.strokeStyle = '#222'; ctx.lineWidth = 7;
+    ctx.beginPath(); ctx.moveTo(e.x, e.y - 4);
+    ctx.bezierCurveTo(e.x, e.y + 40, t.x, t.y - 40, t.x, t.y); ctx.stroke();
+  }
+  ctx.lineCap = 'butt';
+  // box
+  ctx.fillStyle = '#c8a165';
+  ctx.fillRect(L, T, BOX_W, BOX_H);
+  ctx.strokeStyle = '#8a6d3b'; ctx.lineWidth = 3;
+  ctx.strokeRect(L, T, BOX_W, BOX_H);
+  ctx.fillStyle = 'rgba(0,0,0,0.08)';
+  ctx.fillRect(L, T, BOX_W, 18);
+  ctx.strokeStyle = 'rgba(120,90,40,0.6)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(L, T + 18); ctx.lineTo(L + BOX_W, T + 18); ctx.stroke();
+  // tape strip
+  ctx.fillStyle = 'rgba(220,200,150,0.8)';
+  ctx.fillRect(x - 18, T, 36, 18);
+
+  if (REVEAL) drawInside(p, L, T, exitA, exitB);
+  else {
+    ctx.fillStyle = '#5b4220'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = 'bold 64px Arial'; ctx.fillText('?', x, y + 12);
+  }
+  // lead labels
+  ctx.fillStyle = '#333'; ctx.font = 'bold 17px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('A', tA.x - 22, tA.y + 2);
+  ctx.fillText('B', tB.x + 22, tB.y + 2);
+}
+
+function drawInside(p, L, T, exitA, exitB) {
+  const x = p.x, y = p.y;
+  ctx.fillStyle = '#f7ead0';
+  ctx.fillRect(L + 12, T + 26, BOX_W - 24, BOX_H - 34);
+  ctx.strokeStyle = '#8a6d3b'; ctx.lineWidth = 1.5;
+  ctx.strokeRect(L + 12, T + 26, BOX_W - 24, BOX_H - 34);
+  ctx.strokeStyle = '#222'; ctx.lineWidth = 4; ctx.lineJoin = 'round';
+  const line = pts => { ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); for (const q of pts.slice(1)) ctx.lineTo(q[0], q[1]); ctx.stroke(); };
+  const by = y + 22;
+  if (BOX === 'battery') {
+    const sc = 0.62, h = 68 * sc;
+    line([[exitA.x, exitA.y], [exitA.x, by + 30], [x - h, by + 30], [x - h, by]]);
+    line([[exitB.x, exitB.y], [exitB.x, by + 30], [x + h, by + 30], [x + h, by]]);
+    drawBattery(x, by, 1, sc, false);
+  } else if (BOX === 'wire') {
+    line([[exitA.x, exitA.y], [exitA.x, y + 10], [exitB.x, y + 10], [exitB.x, exitB.y]]);
+  } else if (BOX === 'bulb') {
+    const sc = 0.62;
+    line([[exitA.x, exitA.y], [exitA.x, y + 10 + 30 * sc], [x - 44 * sc, y + 10 + 30 * sc]]);
+    line([[exitB.x, exitB.y], [exitB.x, y + 10 + 30 * sc], [x + 44 * sc, y + 10 + 30 * sc]]);
+    drawBulb(x, y + 10, boxBulbPower, sc, true);
+  } else if (BOX === 'battery_bulb') {
+    const sc = 0.5, h = 68 * sc, bx = x - 48, ux = x + 52, uy = y + 6, ty = uy + 30 * sc;
+    line([[exitA.x, exitA.y], [exitA.x, by + 32], [bx - h, by + 32], [bx - h, by]]);
+    line([[bx + h, by], [bx + h, ty], [ux - 44 * sc, ty]]);
+    line([[ux + 44 * sc, ty], [ux + 44 * sc + 6, ty], [ux + 44 * sc + 6, by + 32], [exitB.x, by + 32], [exitB.x, exitB.y]]);
+    drawBattery(bx, by, 1, sc, false);
+    drawBulb(ux, uy, boxBulbPower, sc, true);
+  }
+}
+
+function drawTerminal(t, hl) {
+  ctx.beginPath(); ctx.arc(t.x, t.y, 8, 0, Math.PI * 2);
+  ctx.fillStyle = '#c9c9c9'; ctx.fill();
+  ctx.strokeStyle = '#555'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.beginPath(); ctx.arc(t.x, t.y, 3, 0, Math.PI * 2);
+  ctx.fillStyle = '#666'; ctx.fill();
+  if (hl) {
+    ctx.beginPath(); ctx.arc(t.x, t.y, 13, 0, Math.PI * 2);
+    ctx.strokeStyle = '#3498db'; ctx.lineWidth = 3; ctx.stroke();
+  }
+}
+
+function strokeCurve(c) {
+  ctx.beginPath(); ctx.moveTo(c.x0, c.y0); ctx.quadraticCurveTo(c.cx, c.cy, c.x1, c.y1); ctx.stroke();
+}
+
+function drawWire(w) {
+  const c = wireCurve(termByKey(w.a), termByKey(w.b));
+  const hot = Math.abs(w.amps) > HOT_AMPS;
+  ctx.lineCap = 'round';
+  if (hot) {
+    ctx.save();
+    ctx.shadowColor = 'rgba(255,80,0,1)'; ctx.shadowBlur = 18;
+    ctx.strokeStyle = 'rgba(255,120,0,0.85)'; ctx.lineWidth = 11; strokeCurve(c);
+    ctx.restore();
+  }
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 7; strokeCurve(c);
+  ctx.strokeStyle = w.color; ctx.lineWidth = 5; strokeCurve(c);
+  ctx.lineCap = 'butt';
+  if (hot) {
+    const m = curvePoint(c, 0.5);
+    ctx.font = 'bold 15px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.lineWidth = 4; ctx.strokeStyle = '#fff'; ctx.strokeText('Hot!', m.x, m.y + 18);
+    ctx.fillStyle = '#c0392b'; ctx.fillText('Hot!', m.x, m.y + 18);
+  }
+}
+
+// ── Buttons ──────────────────────────────────────────────────────────────────
+const BUTTONS = [
+  { label: 'Remove all wires', x: 14, y: 14, w: 150, h: 32, act: () => { wires = []; solve(); } },
+  { label: 'Start over',       x: 174, y: 14, w: 104, h: 32, act: () => reset() },
+];
+function drawButton(b, hover) {
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.2)'; ctx.shadowBlur = 4; ctx.shadowOffsetY = 2;
+  ctx.fillStyle = hover ? 'rgba(67,160,71,1)' : 'rgba(76,175,80,0.9)';
+  roundRect(b.x, b.y, b.w, b.h, 4); ctx.fill();
+  ctx.restore();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 14px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 + 1);
+}
+
+// ── Main draw ────────────────────────────────────────────────────────────────
+let drag = null;        // {type:'part'|'wire-new'|'wire-click'|'button', ...}
+let hoverTerm = null, hoverBtn = null, pointer = { x: 0, y: 0 };
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#f0f0f0'; ctx.fillRect(0, 0, W, H);
+
+  for (const p of parts) if (p.kind === 'box') drawBox(p);
+  for (const p of parts) {
+    if (p.kind === 'battery') drawBattery(p.x, p.y, p.dir, 1, Math.abs(p.amps) > HOT_AMPS);
+    else if (p.kind === 'bulb') drawBulb(p.x, p.y, p.power, 1, true);
+  }
+  for (const w of wires) drawWire(w);
+  if (drag && drag.type === 'wire-new') {
+    const t = termByKey(drag.from);
+    ctx.save(); ctx.setLineDash([5, 5]);
+    ctx.strokeStyle = WIRE_COLORS[wireCount % WIRE_COLORS.length]; ctx.lineWidth = 4;
+    strokeCurve(wireCurve(t, pointer));
+    ctx.restore();
+  }
+  for (const t of allTerminals()) drawTerminal(t, hoverTerm === t.key || (drag && drag.type === 'wire-new' && drag.from === t.key));
+
+  for (const b of BUTTONS) drawButton(b, hoverBtn === b);
+  ctx.fillStyle = '#666'; ctx.font = '14px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('Drag from one metal clip to another to connect a wire. Click a wire to remove it.', W / 2, H - 38);
+  ctx.fillText('Click a battery to turn it around. Drag the battery, the bulb or the box to move them.', W / 2, H - 18);
+}
+
+// ── Hit testing ──────────────────────────────────────────────────────────────
+function hitTerminal(x, y) {
+  let best = null, bd = 18;
+  for (const t of allTerminals()) { const d = Math.hypot(t.x - x, t.y - y); if (d < bd) { bd = d; best = t; } }
+  return best;
+}
+function hitPart(x, y) {
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i];
+    if (p.kind === 'battery' && Math.abs(x - p.x) < 60 && Math.abs(y - p.y) < 22) return p;
+    if (p.kind === 'bulb' && (Math.hypot(x - p.x, y - (p.y - 26)) < 30 || (Math.abs(x - p.x) < 36 && y > p.y - 6 && y < p.y + 44))) return p;
+    if (p.kind === 'box' && Math.abs(x - p.x) < BOX_W / 2 && Math.abs(y - p.y) < BOX_H / 2) return p;
+  }
+  return null;
+}
+function hitWire(x, y) {
+  for (let i = wires.length - 1; i >= 0; i--) {
+    const c = wireCurve(termByKey(wires[i].a), termByKey(wires[i].b));
+    let prev = curvePoint(c, 0);
+    for (let s = 1; s <= 30; s++) {
+      const q = curvePoint(c, s / 30);
+      if (segDist(x, y, prev, q) < 9) return wires[i];
+      prev = q;
+    }
+  }
+  return null;
+}
+function segDist(x, y, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y, L2 = dx * dx + dy * dy;
+  let t = L2 ? ((x - a.x) * dx + (y - a.y) * dy) / L2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(x - (a.x + t * dx), y - (a.y + t * dy));
+}
+function hitButton(x, y) { return BUTTONS.find(b => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) || null; }
+
+// ── Pointer handling ─────────────────────────────────────────────────────────
+function toLogical(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * DESIGN_W / r.width, y: (e.clientY - r.top) * DESIGN_H / r.height };
+}
+
+canvas.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  const p = toLogical(e);
+  pointer = p;
+  const b = hitButton(p.x, p.y);
+  const t = b ? null : hitTerminal(p.x, p.y);
+  const part = b || t ? null : hitPart(p.x, p.y);
+  const w = b || t || part ? null : hitWire(p.x, p.y);
+  if (b) drag = { type: 'button', btn: b };
+  else if (t) drag = { type: 'wire-new', from: t.key };
+  else if (part) {
+    drag = { type: 'part', part, dx: p.x - part.x, dy: p.y - part.y, sx: p.x, sy: p.y, moved: false };
+    parts.splice(parts.indexOf(part), 1); parts.push(part);   // bring to front
+    canvas.style.cursor = 'grabbing';
+  } else if (w) drag = { type: 'wire-click', wire: w, sx: p.x, sy: p.y };
+  else drag = null;
+  if (drag) canvas.setPointerCapture(e.pointerId);
+  draw();
+});
+
+canvas.addEventListener('pointermove', e => {
+  const p = toLogical(e);
+  pointer = p;
+  if (drag && drag.type === 'part') {
+    if (Math.hypot(p.x - drag.sx, p.y - drag.sy) > 5) drag.moved = true;
+    if (drag.moved) {
+      const pt = drag.part;
+      const mx = pt.kind === 'box' ? BOX_W / 2 + 10 : 80, top = pt.kind === 'box' ? BOX_H / 2 + 60 : 70;
+      const bot = pt.kind === 'box' ? BOX_H / 2 + 100 : pt.kind === 'bulb' ? 100 : 80;
+      pt.x = Math.max(mx, Math.min(W - mx, p.x - drag.dx));
+      pt.y = Math.max(top, Math.min(H - bot, p.y - drag.dy));
+    }
+    draw();
+    return;
+  }
+  const t = hitTerminal(p.x, p.y);
+  hoverTerm = t ? t.key : null;
+  hoverBtn = drag ? null : hitButton(p.x, p.y);
+  if (!drag) {
+    canvas.style.cursor = (t || hoverBtn || hitWire(p.x, p.y)) ? 'pointer' : hitPart(p.x, p.y) ? 'grab' : 'default';
+  }
+  draw();
+});
+
+function endDrag(e) {
+  if (!drag) return;
+  const p = toLogical(e);
+  if (drag.type === 'button') {
+    if (hitButton(p.x, p.y) === drag.btn) drag.btn.act();
+  } else if (drag.type === 'wire-new') {
+    const t = hitTerminal(p.x, p.y);
+    if (t && t.key !== drag.from) {
+      const dup = wires.some(w => (w.a === drag.from && w.b === t.key) || (w.b === drag.from && w.a === t.key));
+      if (!dup) {
+        wires.push({ a: drag.from, b: t.key, color: WIRE_COLORS[wireCount % WIRE_COLORS.length], amps: 0 });
+        wireCount++;
+      }
+      solve();
+    }
+  } else if (drag.type === 'part') {
+    if (!drag.moved && drag.part.kind === 'battery') { drag.part.dir *= -1; solve(); }
+    canvas.style.cursor = 'grab';
+  } else if (drag.type === 'wire-click') {
+    if (Math.hypot(p.x - drag.sx, p.y - drag.sy) < 6) { wires.splice(wires.indexOf(drag.wire), 1); solve(); }
+  }
+  drag = null;
+  draw();
+}
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', () => { drag = null; draw(); });
+canvas.addEventListener('pointerleave', () => { if (!drag) { hoverTerm = null; hoverBtn = null; draw(); } });
+
+reset();
+new ResizeObserver(fit).observe(canvas);
+fit();
+</script>
+
+<!-- CHEAT PANEL — visible only when ?cheat=1 is in the URL -->
+<script>
+(function () {
+  var _cpQ = new URLSearchParams(location.search);
+  if (_cpQ.get('cheat') !== '1') return;
+
+  // ── CONFIGURE: one entry per exposed URL param ──────────────────────────
+  var CHEAT_DEFS = [
+    {name:'box',       type:'select', values:['battery','wire','empty','bulb','battery_bulb'], default:'battery', desc:'What is inside the box (battery_bulb = battery and bulb in series)'},
+    {name:'reveal',    type:'toggle', default:0, desc:'Show the inside of the box'},
+    {name:'batteries', type:'number', min:0, max:3, step:1, default:1, desc:'Number of 1.5 V batteries on the table'},
+    {name:'bulbs',     type:'number', min:0, max:3, step:1, default:1, desc:'Number of bulbs on the table'},
+  ];
+  var EMBED_KEYS = ['cheat']; // keys stripped from the embeddable URL
+  var SCROLL_KEY = 'cheatPanelScroll:' + location.pathname;
+  var _scrollEl = null;
+  function saveScroll() {
+    if (_scrollEl) { try { sessionStorage.setItem(SCROLL_KEY, String(_scrollEl.scrollTop)); } catch (e) {} }
+  }
+  function go(url) { saveScroll(); location.href = url; }
+
+  function buildCleanUrl(ov) {
+    var p = new URLSearchParams(location.search);
+    EMBED_KEYS.forEach(function(k) { p.delete(k); });
+    for (var k in ov) { var v=ov[k]; if(v===null||v==='') p.delete(k); else p.set(k,v); }
+    var qs = p.toString();
+    return location.origin + location.pathname + (qs ? '?' + qs : '');
+  }
+  function buildCheatUrl(ov) {
+    var b = buildCleanUrl(ov);
+    return b + (b.indexOf('?') >= 0 ? '&' : '?') + 'cheat=1';
+  }
+  function getEff(d) {
+    var r = _cpQ.get(d.name);
+    return r !== null ? r : (d['default'] !== undefined ? String(d['default']) : '');
+  }
+  function isTruthy(v) { return v!=='0'&&v!=='false'&&v!=='no'&&v!=='off'&&v!==''; }
+
+  function makeControl(d) {
+    var eff = getEff(d);
+    if (d.type === 'toggle') {
+      var on = isTruthy(eff), btn = document.createElement('button');
+      btn.textContent = on ? '1 (on)' : '0 (off)';
+      btn.style.cssText = 'background:'+(on?'#1b3d1b':'#3d1b1b')+';color:'+(on?'#6dca80':'#e07070')+
+        ';border:1px solid '+(on?'#2a7a3a':'#8a2a2a')+';border-radius:3px;padding:3px 10px;'+
+        'cursor:pointer;font-size:12px;min-width:70px';
+      btn.onclick = function() { var u={}; u[d.name]=on?'0':'1'; go(buildCheatUrl(u)); };
+      return btn;
+    }
+    if (d.type === 'select') {
+      var sel = document.createElement('select');
+      sel.style.cssText = 'background:#0d1b2a;color:#c8d8e8;border:1px solid #2a3f5f;'+
+        'border-radius:3px;padding:3px 8px;font-size:12px;cursor:pointer';
+      d.values.forEach(function(v) {
+        var o = document.createElement('option'); o.value=v; o.textContent=v;
+        if (eff===String(v)) o.selected=true; sel.appendChild(o);
+      });
+      sel.onchange = function() { var u={}; u[d.name]=sel.value; go(buildCheatUrl(u)); };
+      return sel;
+    }
+    var inp = document.createElement('input');
+    inp.type = d.type==='number' ? 'number' : 'text'; inp.value = eff;
+    if (d.min!==undefined) inp.min=String(d.min);
+    if (d.max!==undefined) inp.max=String(d.max);
+    if (d.step!==undefined) inp.step=String(d.step);
+    inp.style.cssText = 'background:#0d1b2a;color:#c8d8e8;border:1px solid #2a3f5f;'+
+      'border-radius:3px;padding:3px 6px;width:'+(d.type==='number'?'90':'220')+'px;font-size:12px';
+    inp.onchange = function() { var u={}; u[d.name]=inp.value; go(buildCheatUrl(u)); };
+    return inp;
+  }
+
+  function typeLabel(d) {
+    if (d.type==='toggle') return '0|1';
+    if (d.type==='select') return d.values.join('|');
+    if (d.type==='number'&&d.min!==undefined&&d.max!==undefined) return d.min+'–'+d.max;
+    return d.type;
+  }
+
+  function render() {
+    var panel = document.createElement('div');
+    panel.style.cssText = 'position:fixed;bottom:0;left:0;right:0;'+
+      'background:rgba(12,18,32,0.97);color:#c8d8e8;'+
+      'font-family:"Segoe UI",system-ui,monospace;font-size:13px;'+
+      'border-top:2px solid #3a7bd5;z-index:2147483647;max-height:48vh;'+
+      'display:flex;flex-direction:column;'+
+      'box-sizing:border-box;box-shadow:0 -4px 24px rgba(0,0,0,0.6)';
+
+    var bubble = document.createElement('button');
+    bubble.style.cssText = 'position:fixed;bottom:8px;right:12px;'+
+      'background:rgba(12,18,32,0.95);color:#7ab8f5;border:1px solid #3a7bd5;'+
+      'border-radius:4px;padding:4px 12px;font-size:12px;'+
+      'font-family:"Segoe UI",system-ui,monospace;cursor:pointer;'+
+      'z-index:2147483647;display:none;box-shadow:0 2px 8px rgba(0,0,0,0.5);user-select:none';
+    bubble.textContent = '🔑 Cheat Panel';
+    bubble.onclick = function() { bubble.style.display='none'; panel.style.display='flex'; };
+    document.body.appendChild(bubble);
+
+    var hdr = document.createElement('div');
+    hdr.style.cssText = 'font-weight:bold;color:#7ab8f5;'+
+      'display:flex;align-items:center;justify-content:space-between;'+
+      'flex-shrink:0;padding:10px 16px 8px;box-sizing:border-box';
+    var hspan = document.createElement('span');
+    hspan.textContent = '🔑 Cheat Panel — ' + location.pathname.split('/').pop();
+    var btns = document.createElement('div');
+    btns.style.cssText = 'display:flex;align-items:center;gap:2px';
+    var minbtn = document.createElement('button');
+    minbtn.textContent = '−';
+    minbtn.title = 'Minimize (restore without reloading)';
+    minbtn.style.cssText = 'background:none;border:none;color:#7ab8f5;font-size:18px;cursor:pointer;padding:0 4px;line-height:1';
+    minbtn.onclick = function() { panel.style.display='none'; bubble.style.display=''; };
+    var xbtn = document.createElement('button');
+    xbtn.textContent = '×'; xbtn.title = 'Close (reload to restore)';
+    xbtn.style.cssText = 'background:none;border:none;color:#7ab8f5;font-size:18px;cursor:pointer;padding:0 4px;line-height:1';
+    xbtn.onclick = function() { panel.remove(); bubble.remove(); };
+    btns.appendChild(minbtn); btns.appendChild(xbtn);
+    hdr.appendChild(hspan); hdr.appendChild(btns); panel.appendChild(hdr);
+
+    var body = document.createElement('div');
+    _scrollEl = body;
+    body.style.cssText = 'overflow-y:auto;flex:1 1 auto;min-height:0;'+
+      'padding:0 16px 14px;box-sizing:border-box';
+
+    var tbl = document.createElement('table');
+    tbl.style.cssText = 'border-collapse:collapse;width:100%;margin-bottom:10px';
+    var hrow = tbl.createTHead().insertRow();
+    ['Parameter','Type/Values','Control','Description'].forEach(function(h) {
+      var th = document.createElement('th');
+      th.textContent = h;
+      th.style.cssText = 'text-align:left;padding:4px 10px;border-bottom:1px solid #1e3050;'+
+        'color:#5a8fc0;font-size:11px;text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;'+
+        'position:sticky;top:0;background:rgba(12,18,32,0.97);z-index:1';
+      hrow.appendChild(th);
+    });
+    var tbody = tbl.createTBody();
+    CHEAT_DEFS.forEach(function(d) {
+      var row = tbody.insertRow(), isSet = _cpQ.has(d.name);
+      row.style.cssText = 'border-bottom:1px solid #131f30;'+
+        (isSet ? 'background:rgba(58,123,213,0.08)' : '');
+      var nc = row.insertCell();
+      nc.style.cssText = 'padding:5px 10px;font-weight:bold;font-size:12px;'+
+        'color:'+(isSet?'#a8d4ff':'#7fa8d0')+';white-space:nowrap;font-family:monospace';
+      nc.textContent = d.name;
+      var tc = row.insertCell();
+      tc.style.cssText = 'padding:5px 10px;color:#5a7a90;font-size:11px;font-family:monospace';
+      tc.textContent = typeLabel(d);
+      var cc = row.insertCell();
+      cc.style.cssText = 'padding:4px 10px;white-space:nowrap';
+      cc.appendChild(makeControl(d));
+      var dc = row.insertCell();
+      dc.style.cssText = 'padding:5px 10px;color:#8aa0b0;font-size:12px';
+      dc.textContent = (d.desc||'')+(d['default']!==undefined?' (default: '+d['default']+')':'');
+    });
+    body.appendChild(tbl);
+
+    var urlBox = document.createElement('div');
+    urlBox.style.cssText = 'background:#080d1a;border:1px solid #1e3050;border-radius:4px;'+
+      'padding:7px 12px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap';
+    var ulbl = document.createElement('span');
+    ulbl.style.cssText = 'color:#5a8fc0;font-size:11px;text-transform:uppercase;'+
+      'letter-spacing:.06em;white-space:nowrap;flex-shrink:0';
+    ulbl.textContent = 'Embed URL:';
+    var ulink = document.createElement('a');
+    ulink.style.cssText = 'color:#5fba7d;word-break:break-all;font-size:12px;'+
+      'font-family:monospace;text-decoration:none';
+    ulink.href = buildCleanUrl({}); ulink.textContent = buildCleanUrl({});
+    ulink.onclick = function(e) { e.preventDefault(); go(buildCheatUrl({})); };
+    var cpybtn = document.createElement('button');
+    cpybtn.textContent = 'copy';
+    cpybtn.style.cssText = 'background:#1a3050;color:#7ab8f5;border:1px solid #2a4a70;'+
+      'border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;'+
+      'white-space:nowrap;flex-shrink:0;margin-left:4px';
+    cpybtn.onclick = function() {
+      navigator.clipboard && navigator.clipboard.writeText(buildCleanUrl({}));
+      cpybtn.textContent = '✓ copied';
+      setTimeout(function() { cpybtn.textContent = 'copy'; }, 1500);
+    };
+    urlBox.appendChild(ulbl); urlBox.appendChild(ulink); urlBox.appendChild(cpybtn);
+    body.appendChild(urlBox);
+    panel.appendChild(body);
+    document.body.appendChild(panel);
+
+    try {
+      var savedScroll = sessionStorage.getItem(SCROLL_KEY);
+      if (savedScroll !== null) body.scrollTop = parseFloat(savedScroll) || 0;
+    } catch (e) {}
+  }
+  render();
+})();
+</script>
+</body>
+</html>
