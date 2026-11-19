@@ -68,6 +68,7 @@ function reset() {
   for (let i = 0; i < N_BATT; i++) parts.push({ id: 'batt' + i, kind: 'battery', x: 140, y: 390 + i * 70, dir: 1 });
   for (let i = 0; i < N_BULB; i++) parts.push({ id: 'bulb' + i, kind: 'bulb', x: 680 + i * 90, y: 420 });
   wires = [];
+  if (typeof pending !== "undefined") pending = null;
   wireCount = 0;
   solve();
 }
@@ -410,6 +411,7 @@ function drawButton(b, hover) {
 // ── Main draw ────────────────────────────────────────────────────────────────
 let drag = null;        // {type:'part'|'wire-new'|'wire-click'|'button', ...}
 let hoverTerm = null, hoverBtn = null, pointer = { x: 0, y: 0 };
+let pending = null;     // a clip that was clicked (not dragged): the next clicked clip gets a wire to it
 
 function draw() {
   ctx.clearRect(0, 0, W, H);
@@ -421,18 +423,19 @@ function draw() {
     else if (p.kind === 'bulb') drawBulb(p.x, p.y, p.power, 1, true);
   }
   for (const w of wires) drawWire(w);
-  if (drag && drag.type === 'wire-new') {
-    const t = termByKey(drag.from);
+  const wireFrom = drag && drag.type === 'wire-new' ? drag.from : pending;
+  if (wireFrom) {
+    const t = termByKey(wireFrom);
     ctx.save(); ctx.setLineDash([5, 5]);
     ctx.strokeStyle = WIRE_COLORS[wireCount % WIRE_COLORS.length]; ctx.lineWidth = 4;
     strokeCurve(wireCurve(t, pointer));
     ctx.restore();
   }
-  for (const t of allTerminals()) drawTerminal(t, hoverTerm === t.key || (drag && drag.type === 'wire-new' && drag.from === t.key));
+  for (const t of allTerminals()) drawTerminal(t, hoverTerm === t.key || wireFrom === t.key);
 
   for (const b of BUTTONS) drawButton(b, hoverBtn === b);
   ctx.fillStyle = '#666'; ctx.font = '14px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText('Drag from one metal clip to another to connect a wire. Click a wire to remove it.', W / 2, H - 38);
+  ctx.fillText('Drag from one metal clip to another, or click one clip and then the other, to connect a wire. Click a wire to remove it.', W / 2, H - 38);
   ctx.fillText('Click a battery to turn it around. Drag the battery, the bulb or the box to move them.', W / 2, H - 18);
 }
 
@@ -485,6 +488,15 @@ canvas.addEventListener('pointerdown', e => {
   const t = b ? null : hitTerminal(p.x, p.y);
   const part = b || t ? null : hitPart(p.x, p.y);
   const w = b || t || part ? null : hitWire(p.x, p.y);
+  if (pending) {   // second click of a click-click wire
+    const from = pending;
+    pending = null;
+    if (t) {
+      if (t.key !== from) addWire(from, t.key);
+      draw();
+      return;
+    }
+  }
   if (b) drag = { type: 'button', btn: b };
   else if (t) drag = { type: 'wire-new', from: t.key };
   else if (part) {
@@ -521,6 +533,15 @@ canvas.addEventListener('pointermove', e => {
   draw();
 });
 
+function addWire(a, b) {
+  const dup = wires.some(w => (w.a === a && w.b === b) || (w.b === a && w.a === b));
+  if (!dup) {
+    wires.push({ a, b, color: WIRE_COLORS[wireCount % WIRE_COLORS.length], amps: 0 });
+    wireCount++;
+  }
+  solve();
+}
+
 function endDrag(e) {
   if (!drag) return;
   const p = toLogical(e);
@@ -528,14 +549,8 @@ function endDrag(e) {
     if (hitButton(p.x, p.y) === drag.btn) drag.btn.act();
   } else if (drag.type === 'wire-new') {
     const t = hitTerminal(p.x, p.y);
-    if (t && t.key !== drag.from) {
-      const dup = wires.some(w => (w.a === drag.from && w.b === t.key) || (w.b === drag.from && w.a === t.key));
-      if (!dup) {
-        wires.push({ a: drag.from, b: t.key, color: WIRE_COLORS[wireCount % WIRE_COLORS.length], amps: 0 });
-        wireCount++;
-      }
-      solve();
-    }
+    if (t && t.key !== drag.from) addWire(drag.from, t.key);
+    else if (t) pending = drag.from;   // released on the clip it started on: a click, so wait for the second clip
   } else if (drag.type === 'part') {
     if (!drag.moved && drag.part.kind === 'battery') { drag.part.dir *= -1; solve(); }
     canvas.style.cursor = 'grab';
@@ -547,6 +562,7 @@ function endDrag(e) {
 }
 canvas.addEventListener('pointerup', endDrag);
 canvas.addEventListener('pointercancel', () => { drag = null; draw(); });
+window.addEventListener('keydown', e => { if (e.key === 'Escape' && pending) { pending = null; draw(); } });
 canvas.addEventListener('pointerleave', () => { if (!drag) { hoverTerm = null; hoverBtn = null; draw(); } });
 
 reset();
